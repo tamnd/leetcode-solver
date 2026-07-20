@@ -59,3 +59,23 @@ func TestConvertSQLite(t *testing.T) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }
+
+func TestSQLiteReferenceDataRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	db, err := OpenSQLite(filepath.Join(t.TempDir(), "references.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	want := ReferenceData{Source: "dataset", Revision: "abc", QuestionID: "1", Slug: "two-sum", SolutionsJSON: []byte(`[{"lang":"golang","typed_code":"code"}]`), MetadataJSON: []byte(`{"split":"train"}`)}
+	if err := db.PutReferenceData(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.ReferenceData(ctx, want.Source, want.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Revision != want.Revision || string(got.SolutionsJSON) != string(want.SolutionsJSON) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}

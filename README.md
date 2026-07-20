@@ -57,6 +57,7 @@ Problem discovery and statement retrieval require no API key or LeetCode login. 
 | `LEETCODE_SOLVER_LANGUAGE` | `auto` | Generates both Python and Go when both starters exist |
 | `LEETCODE_SOLVER_DATABASE` | `~/data/leetcode/leetcode.sqlite` | CGO-free local problem snapshot |
 | `LEETCODE_SOLVER_EVAL_ROOT` | `~/data/leetcode-evals` | Versioned offline test bundles |
+| `LEETCODE_SOLVER_COMPLETE_CACHE` | `~/data/leetcode-complete` | Checksum-verified raw `leetcode-complete` snapshot |
 | `LEETCODE_SOLVER_CONTAINER_RUNTIME` | `auto` | Docker or Podman, detected locally |
 | `LEETCODE_SOLVER_OUTPUT` | `~/data/leetcode-solver` | Audit and article directory |
 | `LEETCODE_SOLVER_CANDIDATES` | `3` | Independent candidates, from 1 to 5 |
@@ -66,6 +67,7 @@ Problem discovery and statement retrieval require no API key or LeetCode login. 
 
 ```sh
 leetcode-solver sync
+leetcode-solver complete-sync
 leetcode-solver eval-sync
 leetcode-solver solve two-sum
 leetcode-solver solve --language golang --candidates 5 regular-expression-matching
@@ -79,6 +81,20 @@ On success the command prints the verified test count, optional online submissio
 ```
 
 The JSON record retains every model response, offline suite revision and test count, optional hidden-test result, repair, timestamp, and exact final code. Failed attempts retain JSON evidence but never create or overwrite a publishable Markdown article. When Python and Go both pass, `solution.md` combines both exact implementations in the detailed `brain` article format.
+
+### Fully offline problem and reference snapshot
+
+`complete-sync` downloads the four files from a commit-pinned [whiskwhite/leetcode-complete](https://huggingface.co/datasets/whiskwhite/leetcode-complete) snapshot, verifies each upstream SHA-256, retains the raw JSONL cache, and imports all problem fields into SQLite. Model-generated reference solutions are stored in a separate table that the solving path never reads, preventing accidental prompt leakage.
+
+```sh
+leetcode-solver complete-sync
+leetcode-solver complete-sync --offline
+leetcode-solver reference two-sum > two-sum.references.json
+```
+
+After the first command, `--offline` verifies and processes only cached bytes and makes no HTTP request. The reference command is deliberately explicit. These solutions are dataset records, not correctness oracles, and are never substituted for independent execution tests. The dataset currently declares its license as unknown; review its terms before redistributing cached data or derived artifacts.
+
+The verified pinned snapshot contains 3,889 source rows representing 3,888 unique problem IDs, 3,567 Python 3 starters, 3,555 Go starters, and 9,550 reference-solution records. Of those references, 5,529 are Python 3 and none are Go. The dataset's examples contain inputs rather than a complete executable expected-output suite, so `complete-sync` expands offline problem coverage but does not replace `eval-sync` or the execution gate.
 
 ## Complete catalog
 

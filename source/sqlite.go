@@ -40,8 +40,48 @@ func OpenSQLite(path string) (*SQLite, error) {
 }
 func (s *SQLite) Close() error { return s.db.Close() }
 func (s *SQLite) init() error {
-	_, err := s.db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS questions(question_id TEXT PRIMARY KEY,frontend_id TEXT,title_slug TEXT UNIQUE,title TEXT,difficulty TEXT,paid_only INTEGER NOT NULL DEFAULT 0,content_html TEXT,content_md TEXT,hints_json TEXT,example_testcases TEXT,sample_testcase TEXT,meta_data TEXT,code_snippets TEXT,topic_tags TEXT,fetched_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS idx_questions_frontend ON questions(frontend_id);`)
+	_, err := s.db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS questions(question_id TEXT PRIMARY KEY,frontend_id TEXT,title_slug TEXT UNIQUE,title TEXT,difficulty TEXT,paid_only INTEGER NOT NULL DEFAULT 0,content_html TEXT,content_md TEXT,hints_json TEXT,example_testcases TEXT,sample_testcase TEXT,meta_data TEXT,code_snippets TEXT,topic_tags TEXT,fetched_at TEXT NOT NULL); CREATE INDEX IF NOT EXISTS idx_questions_frontend ON questions(frontend_id); CREATE TABLE IF NOT EXISTS reference_solutions(source TEXT NOT NULL,revision TEXT NOT NULL,question_id TEXT NOT NULL,title_slug TEXT NOT NULL,solutions_json TEXT NOT NULL,metadata_json TEXT NOT NULL,imported_at TEXT NOT NULL,PRIMARY KEY(source,revision,title_slug)); CREATE INDEX IF NOT EXISTS idx_reference_solutions_slug ON reference_solutions(title_slug);`)
 	return err
+}
+
+type ReferenceData struct {
+	Source        string          `json:"source"`
+	Revision      string          `json:"revision"`
+	QuestionID    string          `json:"question_id"`
+	Slug          string          `json:"title_slug"`
+	SolutionsJSON json.RawMessage `json:"solutions"`
+	MetadataJSON  json.RawMessage `json:"metadata"`
+	ImportedAt    time.Time       `json:"imported_at"`
+}
+
+func (s *SQLite) PutReferenceData(ctx context.Context, value ReferenceData) error {
+	if value.Source == "" || value.Revision == "" || value.QuestionID == "" || value.Slug == "" {
+		return errors.New("reference data requires source, revision, question ID, and slug")
+	}
+	if !json.Valid(value.SolutionsJSON) || !json.Valid(value.MetadataJSON) {
+		return errors.New("reference data requires valid solutions and metadata JSON")
+	}
+	if value.ImportedAt.IsZero() {
+		value.ImportedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO reference_solutions(source,revision,question_id,title_slug,solutions_json,metadata_json,imported_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(source,revision,title_slug) DO UPDATE SET question_id=excluded.question_id,solutions_json=excluded.solutions_json,metadata_json=excluded.metadata_json,imported_at=excluded.imported_at`, value.Source, value.Revision, value.QuestionID, value.Slug, string(value.SolutionsJSON), string(value.MetadataJSON), value.ImportedAt.Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *SQLite) ReferenceData(ctx context.Context, sourceName, key string) (ReferenceData, error) {
+	var value ReferenceData
+	var solutions, metadata, imported string
+	err := s.db.QueryRowContext(ctx, `SELECT source,revision,question_id,title_slug,solutions_json,metadata_json,imported_at FROM reference_solutions WHERE source=? AND (title_slug=? OR question_id=?) ORDER BY imported_at DESC LIMIT 1`, sourceName, key, key).Scan(&value.Source, &value.Revision, &value.QuestionID, &value.Slug, &solutions, &metadata, &imported)
+	if errors.Is(err, sql.ErrNoRows) {
+		return value, fmt.Errorf("reference data %q from %q not found", key, sourceName)
+	}
+	if err != nil {
+		return value, err
+	}
+	value.SolutionsJSON = json.RawMessage(solutions)
+	value.MetadataJSON = json.RawMessage(metadata)
+	value.ImportedAt, _ = time.Parse(time.RFC3339Nano, imported)
+	return value, nil
 }
 func (s *SQLite) Catalog(ctx context.Context) ([]CatalogItem, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT question_id,frontend_id,title,title_slug,difficulty,paid_only,COALESCE(topic_tags,'[]') FROM questions ORDER BY CAST(frontend_id AS INTEGER)`)

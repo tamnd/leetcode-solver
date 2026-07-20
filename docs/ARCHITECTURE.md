@@ -15,6 +15,8 @@ live catalog -> problem snapshot -> private reference
 
 The source client retrieves a statement and starter code. The model endpoint receives that public problem data and returns untrusted text. The parser extracts code and explanation through explicit tags, proves that a fenced implementation exactly matches the executable candidate, and enforces structural publication guards. The pinned offline suite is the mandatory publication gate; an optional LeetCode Accepted result is stronger independent online evidence. The filesystem store writes atomically and never persists session cookies, CSRF tokens, or model API keys.
 
+The optional `leetcode-complete` snapshot has two storage boundaries. Problem statements, metadata, and starter snippets populate the ordinary `questions` table. Dataset-provided model solutions populate `reference_solutions` and are reachable only through the explicit `reference` command; the solver repository interface never reads that table. Raw split files remain in a revision-addressed, checksum-verified local cache so subsequent imports can run with networking prohibited.
+
 ## Why a private reference
 
 The reference is derived before any candidate is visible. It lists algorithmic obligations, likely bugs, and adversarial cases, reducing anchoring on a plausible candidate. It remains fallible, so the selector is instructed to accept valid alternatives and hidden execution remains authoritative.

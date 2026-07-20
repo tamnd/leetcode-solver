@@ -4,6 +4,7 @@ This audit distinguishes broad public coverage from the unavailable proprietary 
 
 | Source | Useful coverage | Limitation | Integration |
 | --- | --- | --- | --- |
+| [whiskwhite/leetcode-complete](https://huggingface.co/datasets/whiskwhite/leetcode-complete) | 3,889 source rows (3,888 unique IDs) across train, validation, test, and unsolved splits, with statements, metadata, broad starter snippets including Python 3 and Go, and model-generated solutions | License is marked unknown; solutions are not independently verified; examples are inputs rather than a complete executable expected-output suite | Implemented by the Go `complete-sync` downloader/importer with commit and SHA-256 pinning, a raw offline cache, solver-visible problem rows, and isolated reference rows |
 | [newfacade/LeetCodeDataset](https://github.com/newfacade/LeetCodeDataset) / [Hugging Face](https://huggingface.co/datasets/newfacade/LeetCodeDataset) | The pinned v0.3.1 revision has 2,641 train and 228 test Python rows. The verified import produced 2,835 runnable bundles containing 274,914 assertions; 34 rows had no usable tests or entry point. | Python only; generated tests; does not cover the current full catalog or reproduce private hidden tests | Implemented by the Go `eval-sync` importer |
 | [tkeskin/leetcode-solutions](https://huggingface.co/datasets/tkeskin/leetcode-solutions) | About 3,169 Python solutions and 3,495 C++ solutions, plus input/output data inherited from LeetCodeDataset | Test coverage is bounded by the secondary source; no Go column; solution data must never enter generation prompts | Candidate source for independent oracle comparison only |
 | [LiveCodeBench](https://github.com/LiveCodeBench/LiveCodeBench) | Recent LeetCode, AtCoder, and Codeforces tasks with execution tests and dated releases | Hundreds of contest tasks, not all LeetCode problems; mostly standard-input programs rather than LeetCode method wrappers | Benchmark adapter target |
@@ -17,6 +18,10 @@ This audit distinguishes broad public coverage from the unavailable proprietary 
 ## Finding
 
 No located public GitHub or Hugging Face source contains every official test case for every current LeetCode problem. LeetCode's private judge cases are not published as a complete dataset, the live catalog changes, premium content has separate access constraints, and public mirrors have language, date, problem-type, and test-generation gaps.
+
+`leetcode-complete` materially improves offline problem and starter-code coverage, including recent rows and both target languages, but it does not change this test-suite finding. Its stored solutions are useful for explicit post-generation comparison and future independently tested oracle construction only. They must not enter candidate prompts or be counted as accepted until the same execution gates pass.
+
+The pinned import was executed against all four files: 3,889 source rows became 3,888 unique problem IDs, with 3,567 Python 3 starters, 3,555 Go starters, 9,550 reference-solution records, and 576 rows without solutions. The reference records include 5,529 Python 3 solutions but no Go solutions. ID 627 occurs under two historical slugs; both reference rows are retained while the problem table remains keyed by the stable ID.
 
 Consequently the repository uses three explicit terms:
 

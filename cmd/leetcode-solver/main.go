@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tamnd/leetcode-solver/artifact"
+	"github.com/tamnd/leetcode-solver/completedataset"
 	"github.com/tamnd/leetcode-solver/config"
 	benchmark "github.com/tamnd/leetcode-solver/eval"
 	"github.com/tamnd/leetcode-solver/evaldataset"
@@ -49,6 +50,10 @@ func run(ctx context.Context, args []string) error {
 		return syncDataset(ctx, args[1:])
 	case "convert":
 		return convertDataset(ctx, args[1:])
+	case "complete-sync":
+		return syncCompleteDataset(ctx, args[1:])
+	case "reference":
+		return showReference(ctx, args[1:])
 	case "eval-sync":
 		return syncEvalDataset(ctx, args[1:])
 	case "coverage":
@@ -65,7 +70,7 @@ func run(ctx context.Context, args []string) error {
 	}
 }
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: leetcode-solver <sync|convert|eval-sync|coverage|solve|batch|catalog|verify|eval|version> [options]")
+	fmt.Fprintln(os.Stderr, "usage: leetcode-solver <sync|complete-sync|convert|reference|eval-sync|coverage|solve|batch|catalog|verify|eval|version> [options]")
 	return errors.New("command is required")
 }
 
@@ -150,6 +155,51 @@ func syncEvalDataset(ctx context.Context, args []string) error {
 	}
 	fmt.Printf("read %d rows; imported %d Python bundles with %d offline tests\n", totalRows, totalBundles, totalTests)
 	return nil
+}
+
+func syncCompleteDataset(ctx context.Context, args []string) error {
+	cfg := config.Load()
+	fs := flag.NewFlagSet("complete-sync", flag.ContinueOnError)
+	fs.StringVar(&cfg.Database, "database", cfg.Database, "destination SQLite problem and reference database")
+	fs.StringVar(&cfg.CompleteCache, "cache", cfg.CompleteCache, "raw pinned dataset cache")
+	revision := fs.String("revision", completedataset.DefaultRevision, "pinned Hugging Face revision")
+	offlineOnly := fs.Bool("offline", false, "prohibit downloads and require a verified cache")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	database, err := source.OpenSQLite(cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = database.Close() }()
+	report, err := completedataset.Sync(ctx, database, completedataset.Options{Revision: *revision, CacheDir: cfg.CompleteCache, Offline: *offlineOnly, Progress: func(message string) { fmt.Fprintln(os.Stderr, message) }})
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(report)
+}
+
+func showReference(ctx context.Context, args []string) error {
+	cfg := config.Load()
+	fs := flag.NewFlagSet("reference", flag.ContinueOnError)
+	fs.StringVar(&cfg.Database, "database", cfg.Database, "SQLite reference database")
+	sourceName := fs.String("source", completedataset.Source, "reference dataset source")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("reference requires a problem slug or ID")
+	}
+	database, err := source.OpenSQLite(cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = database.Close() }()
+	value, err := database.ReferenceData(ctx, *sourceName, fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(value)
 }
 
 func convertDataset(ctx context.Context, args []string) error {
