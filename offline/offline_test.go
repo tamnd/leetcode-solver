@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 )
 
@@ -34,6 +35,18 @@ func TestRunnerExecutesValidBundle(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+func TestContainerArgsGiveOnlyGoAnExecutableBuildTmpfs(t *testing.T) {
+	goArgs := containerArgs("/host/work", Manifest{Language: "golang", Image: "go@sha256:abc"})
+	if !slices.Contains(goArgs, "/tmp:rw,nosuid,noexec,size=64m") || !slices.Contains(goArgs, "/go-tmp:rw,nosuid,exec,size=256m") || !slices.Contains(goArgs, "GOTMPDIR=/go-tmp") {
+		t.Fatalf("Go container args do not isolate executable build storage: %q", goArgs)
+	}
+	pythonArgs := containerArgs("/host/work", Manifest{Language: "python3", Image: "python@sha256:abc"})
+	if slices.Contains(pythonArgs, "/go-tmp:rw,nosuid,exec,size=256m") || slices.Contains(pythonArgs, "GOTMPDIR=/go-tmp") {
+		t.Fatalf("Python unexpectedly received executable temporary storage: %q", pythonArgs)
+	}
+}
+
 func TestValidateRejectsZeroTests(t *testing.T) {
 	err := validate(Manifest{SchemaVersion: 1, ProblemSlug: "x", Language: "golang", Dataset: "d", Revision: "r", Image: "go@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", CandidateFile: "solution.go", Command: []string{"go"}}, "x", "golang")
 	if err == nil {

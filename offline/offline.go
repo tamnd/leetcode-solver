@@ -101,8 +101,7 @@ func (r Runner) Verify(ctx context.Context, slug, language, code string) (Result
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
-	mount := work + ":/workspace:ro"
-	args := []string{"run", "--rm", "--pull=never", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=128", "--memory=512m", "--cpus=1", "--tmpfs", "/tmp:rw,nosuid,size=256m", "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "GOCACHE=/tmp/go-cache", "-e", "GOTMPDIR=/tmp", "-v", mount, "-w", "/workspace", manifest.Image}
+	args := containerArgs(work, manifest)
 	args = append(args, manifest.Command...)
 	started := time.Now()
 	cmd := exec.CommandContext(runCtx, docker, args...)
@@ -123,6 +122,16 @@ func (r Runner) Verify(ctx context.Context, slug, language, code string) (Result
 		return result, fmt.Errorf("offline eval failed: %w\n%s", runErr, strings.TrimSpace(result.Output))
 	}
 	return result, nil
+}
+
+func containerArgs(work string, manifest Manifest) []string {
+	args := []string{"run", "--rm", "--pull=never", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=128", "--memory=512m", "--cpus=1", "--tmpfs", "/tmp:rw,nosuid,noexec,size=64m", "-e", "PYTHONDONTWRITEBYTECODE=1"}
+	if manifest.Language == "golang" {
+		// The Go toolchain must execute its compiled test binary. Keep the ordinary
+		// temporary directory noexec and provide a bounded build-only tmpfs.
+		args = append(args, "--tmpfs", "/go-tmp:rw,nosuid,exec,size=256m", "-e", "GOCACHE=/go-tmp/cache", "-e", "GOTMPDIR=/go-tmp")
+	}
+	return append(args, "-v", work+":/workspace:ro", "-w", "/workspace", manifest.Image)
 }
 
 func validate(m Manifest, slug, language string) error {
