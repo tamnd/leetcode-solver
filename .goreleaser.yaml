@@ -1,0 +1,36 @@
+version: 2
+project_name: leetcode-solver
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - main: ./cmd/leetcode-solver
+    binary: leetcode-solver
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+      - freebsd
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - '-s -w -X main.version={{.Version}}'
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+checksum:
+  name_template: checksums.txt
+sboms:
+  - artifacts: archive
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
