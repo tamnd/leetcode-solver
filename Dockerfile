@@ -7,7 +7,7 @@ COPY . .
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/leetcode-solver ./cmd/leetcode-solver
 
-FROM alpine:3.23
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates && adduser -D -u 10001 solver
 COPY --from=build /out/leetcode-solver /usr/local/bin/leetcode-solver
 USER solver
