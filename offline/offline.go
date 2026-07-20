@@ -73,6 +73,9 @@ func (r Runner) Verify(ctx context.Context, slug, language, code string) (Result
 		return Result{}, err
 	}
 	defer func() { _ = os.RemoveAll(work) }()
+	if err := os.Chmod(work, 0o755); err != nil {
+		return Result{}, fmt.Errorf("make eval workspace container-readable: %w", err)
+	}
 	bundleDir := filepath.Dir(manifestPath)
 	for _, name := range manifest.Files {
 		if err := safeCopy(bundleDir, work, name); err != nil {
@@ -176,7 +179,7 @@ func safeWrite(root, name string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	return os.WriteFile(path, data, 0o444)
 }
 
 func cleanRelativePath(name string) (string, error) {

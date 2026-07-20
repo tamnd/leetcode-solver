@@ -53,3 +53,20 @@ func TestSafeCopyRejectsTraversal(t *testing.T) {
 		t.Fatal("expected traversal to be rejected")
 	}
 }
+
+func TestSafeWriteProducesReadOnlyContainerReadableFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
+	root := t.TempDir()
+	if err := safeWrite(root, "nested/test.py", []byte("pass\n")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(root, "nested", "test.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o444 {
+		t.Fatalf("mode=%o, want 444", got)
+	}
+}
