@@ -84,6 +84,9 @@ func WriteReport(data, jsonPath, markdownPath string) error {
 		if r.Model == "gpt-5.6-luna" {
 			provider = "luna"
 		}
+		if r.Model == "gpt-5.4-mini" {
+			provider = "mini"
+		}
 		t := TokenDetail{Input: r.Tokens.Prompt, CachedInput: r.Tokens.Cached, CacheWriteInput: r.Tokens.CacheWrite, FreshInput: max(r.Tokens.Prompt-r.Tokens.Cached, 0), Output: r.Tokens.Completion, Reasoning: r.Tokens.Reasoning, Total: r.Tokens.Total}
 		usagePath := filepath.Join(filepath.Dir(path), "attempt-1", "trace", "usage.jsonl")
 		if t.Reasoning == 0 {
@@ -138,6 +141,10 @@ func listCost(model string, t TokenDetail) float64 {
 		input = 1e-6
 		cache = 1e-7
 		output = 6e-6
+	case "gpt-5.4-mini":
+		input = 7.5e-7
+		cache = 7.5e-8
+		output = 4.5e-6
 	case "deepseek-v4-flash-free", "deepseek-v4-flash", "deepseek-chat":
 		input = 2.8e-7
 		cache = 2.8e-8

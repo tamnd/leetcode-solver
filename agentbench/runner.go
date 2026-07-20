@@ -73,8 +73,8 @@ func Run(ctx context.Context, o RunOptions) error {
 	}
 	for _, provider := range providers {
 		var bridge *exec.Cmd
-		if provider == "luna" {
-			bridge, err = startBridge(ctx, o)
+		if provider == "luna" || provider == "mini" {
+			bridge, err = startBridge(ctx, o, providerModel(provider))
 			if err != nil {
 				return err
 			}
@@ -248,13 +248,26 @@ func providerEnv(provider, tool string, o RunOptions) []string {
 			pass = "1"
 		}
 		return []string{"LAB_MODEL=gpt-5.6-luna", "LAB_UPSTREAM=http://host.containers.internal:8790", "LAB_PASSTHROUGH=" + pass, "LAB_NAME_PREFIX=leetcode-luna"}
+	case "mini":
+		pass := "0"
+		if tool == "codex" {
+			pass = "1"
+		}
+		return []string{"LAB_MODEL=gpt-5.4-mini", "LAB_UPSTREAM=http://host.containers.internal:8790", "LAB_PASSTHROUGH=" + pass, "LAB_NAME_PREFIX=leetcode-mini"}
 	default:
 		return nil
 	}
 }
 
-func startBridge(ctx context.Context, o RunOptions) (*exec.Cmd, error) {
-	cmd := exec.CommandContext(ctx, "go", "run", "./cmd/lab", "bridge", "--model", "gpt-5.6-luna", "--effort", "high", "--port", "8790")
+func providerModel(provider string) string {
+	if provider == "mini" {
+		return "gpt-5.4-mini"
+	}
+	return "gpt-5.6-luna"
+}
+
+func startBridge(ctx context.Context, o RunOptions, model string) (*exec.Cmd, error) {
+	cmd := exec.CommandContext(ctx, "go", "run", "./cmd/lab", "bridge", "--model", model, "--effort", "high", "--port", "8790")
 	cmd.Dir = o.Workspace
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

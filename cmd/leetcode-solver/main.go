@@ -95,7 +95,7 @@ func agentBench(ctx context.Context, args []string) error {
 	prepareOnly := fs.Bool("prepare-only", false, "prepare tasks and adapter without running agents")
 	skipBuild := fs.Bool("skip-build", false, "reuse prebuilt lab images")
 	tools := fs.String("tools", "", "comma-separated tool subset")
-	providers := fs.String("providers", "", "comma-separated deepseek,luna subset")
+	providers := fs.String("providers", "", "comma-separated deepseek,luna,mini subset")
 	scenarios := fs.String("scenarios", "", "comma-separated scenario subset")
 	if err := fs.Parse(args); err != nil {
 		return err

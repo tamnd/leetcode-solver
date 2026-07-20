@@ -17,7 +17,7 @@ import (
 // and the Codex-subscription bridge expose chat completions. It accepts either
 // an ordinary JSON response or an SSE stream, regardless of the requested mode.
 func (c *Client) ChatComplete(ctx context.Context, model, system, user string) (string, error) {
-	payload := map[string]any{"model": model, "stream": false, "messages": []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": user}}}
+	payload := map[string]any{"model": model, "stream": true, "stream_options": map[string]bool{"include_usage": true}, "messages": []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": user}}}
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
