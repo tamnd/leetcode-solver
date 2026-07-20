@@ -21,7 +21,7 @@ const (
 	DatasetRevision  = "0fe84c3912ea0c4d4a78037083943e8f0c4dd505"
 	DatasetSHA256    = "bb4c364f71921c4495a6ad15abe1a927350b720009f4933e2e71f8af0f6fd1f5"
 	DatasetFile      = "test6.jsonl"
-	TomoRevision     = "a999294f812f79b2daac681650c32b638525e2bf"
+	TomoRevision     = "4357c0feff1cc9df53479d0a48079284dd915259"
 	TomoLabsRevision = "f80a99db76aa446bc318f6f1edc3541245ab890b"
 )
 

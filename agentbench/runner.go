@@ -141,21 +141,29 @@ func prepareLab(ctx context.Context, o RunOptions, rows []Row) error {
 	if err := os.WriteFile(baseDocker, []byte(baseText), 0o644); err != nil {
 		return err
 	}
-	// The tomo image must measure the freshly merged engine, not the older pin in
-	// the historical lab commit.
-	tomoDocker := filepath.Join(o.Workspace, "tools", "tomo", "Dockerfile")
-	docker, err := os.ReadFile(tomoDocker)
-	if err != nil {
-		return err
-	}
-	lines := strings.Split(string(docker), "\n")
-	for i, line := range lines {
-		if strings.HasPrefix(line, "ARG TOMO_VERSION=") {
-			lines[i] = "ARG TOMO_VERSION=" + TomoRevision
+	// Every tomo engine image must measure the same freshly merged binary, not
+	// the older pins in the historical lab commit. Keeping agent, cx, oi, and
+	// kata aligned makes engine A/B runs differ only in their loop and prompt.
+	for _, name := range []string{"tomo", "tomo-cx", "tomo-oi", "tomo-kata"} {
+		tomoDocker := filepath.Join(o.Workspace, "tools", name, "Dockerfile")
+		docker, readErr := os.ReadFile(tomoDocker)
+		if readErr != nil {
+			return readErr
 		}
-	}
-	if err := os.WriteFile(tomoDocker, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
-		return err
+		lines := strings.Split(string(docker), "\n")
+		found := false
+		for i, line := range lines {
+			if strings.HasPrefix(line, "ARG TOMO_VERSION=") {
+				lines[i] = "ARG TOMO_VERSION=" + TomoRevision
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("pinned lab %s image has no TOMO_VERSION argument", name)
+		}
+		if err := os.WriteFile(tomoDocker, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+			return err
+		}
 	}
 	toolDir := filepath.Join(o.Workspace, "tools", "leetcode-solver")
 	if err := os.MkdirAll(toolDir, 0o755); err != nil {
@@ -236,24 +244,27 @@ func labCommand(ctx context.Context, o RunOptions, extra []string, args ...strin
 }
 
 func providerEnv(provider, tool string, o RunOptions) []string {
+	if model, ok := strings.CutPrefix(provider, "zen/"); ok && model != "" {
+		return []string{"LAB_MODEL=" + model, "LAB_UPSTREAM=https://opencode.ai/zen", "LAB_PASSTHROUGH=0", "LAB_NAME_PREFIX=leetcode-zen", "LAB_PROXY_PORT=8902"}
+	}
 	switch provider {
 	case "deepseek":
 		// DeepSeek free is the preferred Zen route. If its daily quota is exhausted,
 		// the documented fallback keeps the benchmark moving and the result records
 		// the actual model rather than pretending the cell is still DeepSeek.
-		return []string{"LAB_MODEL=hy3-free", "LAB_UPSTREAM=https://opencode.ai/zen", "LAB_PASSTHROUGH=0", "LAB_NAME_PREFIX=leetcode-zen"}
+		return []string{"LAB_MODEL=hy3-free", "LAB_UPSTREAM=https://opencode.ai/zen", "LAB_PASSTHROUGH=0", "LAB_NAME_PREFIX=leetcode-zen", "LAB_PROXY_PORT=8902"}
 	case "luna":
 		pass := "0"
 		if tool == "codex" {
 			pass = "1"
 		}
-		return []string{"LAB_MODEL=gpt-5.6-luna", "LAB_UPSTREAM=http://host.containers.internal:8790", "LAB_PASSTHROUGH=" + pass, "LAB_NAME_PREFIX=leetcode-luna"}
+		return []string{"LAB_MODEL=gpt-5.6-luna", "LAB_UPSTREAM=http://host.containers.internal:8790", "LAB_PASSTHROUGH=" + pass, "LAB_NAME_PREFIX=leetcode-luna", "LAB_PROXY_PORT=8901"}
 	case "mini":
 		pass := "0"
 		if tool == "codex" {
 			pass = "1"
 		}
-		return []string{"LAB_MODEL=gpt-5.4-mini", "LAB_UPSTREAM=http://host.containers.internal:8790", "LAB_PASSTHROUGH=" + pass, "LAB_NAME_PREFIX=leetcode-mini"}
+		return []string{"LAB_MODEL=gpt-5.4-mini", "LAB_UPSTREAM=http://host.containers.internal:8790", "LAB_PASSTHROUGH=" + pass, "LAB_NAME_PREFIX=leetcode-mini", "LAB_PROXY_PORT=8903"}
 	default:
 		return nil
 	}
