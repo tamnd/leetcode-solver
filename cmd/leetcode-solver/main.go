@@ -11,9 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/tamnd/leetcode-solver/agentbench"
 	"github.com/tamnd/leetcode-solver/artifact"
 	"github.com/tamnd/leetcode-solver/completedataset"
 	"github.com/tamnd/leetcode-solver/config"
@@ -62,6 +64,10 @@ func run(ctx context.Context, args []string) error {
 		return evaluate(args[1:])
 	case "verify":
 		return verifyOffline(ctx, args[1:])
+	case "agent-solve":
+		return agentSolve(ctx, args[1:])
+	case "agent-bench":
+		return agentBench(ctx, args[1:])
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -70,8 +76,95 @@ func run(ctx context.Context, args []string) error {
 	}
 }
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: leetcode-solver <sync|complete-sync|convert|reference|eval-sync|coverage|solve|batch|catalog|verify|eval|version> [options]")
+	fmt.Fprintln(os.Stderr, "usage: leetcode-solver <sync|complete-sync|convert|reference|eval-sync|coverage|solve|batch|catalog|verify|eval|agent-solve|agent-bench|version> [options]")
 	return errors.New("command is required")
+}
+
+func agentBench(ctx context.Context, args []string) error {
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("agent-bench", flag.ContinueOnError)
+	repo := fs.String("repo", wd, "leetcode-solver repository")
+	labRepo := fs.String("lab-repo", filepath.Join(filepath.Dir(wd), "tomo-labs"), "tomo-labs repository containing the pinned commit")
+	workspace := fs.String("workspace", agentbench.DefaultWorkspace(), "recreated pinned lab workspace")
+	cache := fs.String("cache", filepath.Join(wd, ".cache", "agentbench"), "verified dataset cache")
+	data := fs.String("data", filepath.Join(wd, ".cache", "agentbench-runs"), "raw isolated run data")
+	offlineOnly := fs.Bool("offline", false, "require cached dataset and perform no dataset download")
+	prepareOnly := fs.Bool("prepare-only", false, "prepare tasks and adapter without running agents")
+	skipBuild := fs.Bool("skip-build", false, "reuse prebuilt lab images")
+	tools := fs.String("tools", "", "comma-separated tool subset")
+	providers := fs.String("providers", "", "comma-separated deepseek,luna,mini, or zen/<model> routes")
+	scenarios := fs.String("scenarios", "", "comma-separated scenario subset")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	split := func(s string) []string {
+		var out []string
+		for _, v := range strings.Split(s, ",") {
+			if v = strings.TrimSpace(v); v != "" {
+				out = append(out, v)
+			}
+		}
+		return out
+	}
+	return agentbench.Run(ctx, agentbench.RunOptions{Repository: *repo, LabRepository: *labRepo, Workspace: *workspace, Cache: *cache, Data: *data, Offline: *offlineOnly, PrepareOnly: *prepareOnly, SkipBuild: *skipBuild, Tools: split(*tools), Providers: split(*providers), Scenarios: split(*scenarios), Progress: func(s string) { fmt.Fprintln(os.Stderr, "[agent-bench]", s) }})
+}
+
+// agentSolve is the isolated benchmark entrypoint. It sees the same visible
+// task as every coding agent and never sees the sibling hidden-test oracle.
+func agentSolve(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("agent-solve", flag.ContinueOnError)
+	promptPath := fs.String("prompt", "/scenario/prompt.txt", "visible task prompt")
+	outputPath := fs.String("output", "/work/solution.py", "solution file to replace")
+	baseURL := fs.String("base-url", os.Getenv("LAB_BASE_URL"), "traced Responses endpoint")
+	model := fs.String("model", os.Getenv("LAB_MODEL"), "model under test")
+	apiKey := fs.String("api-key", os.Getenv("OPENCODE_API_KEY"), "proxy credential")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	task, err := os.ReadFile(*promptPath)
+	if err != nil {
+		return err
+	}
+	stub, err := os.ReadFile(*outputPath)
+	if err != nil {
+		return err
+	}
+	instructions := "You are the leetcode-solver coding engine. Return a correct Python solution after carefully deriving edge cases and complexity. Reply with exactly one fenced python code block and no other fenced blocks. Do not use the network and do not attempt to access hidden tests."
+	input := string(task) + "\n\nCurrent solution.py:\n```python\n" + string(stub) + "\n```"
+	response, err := (&llm.Client{BaseURL: *baseURL, APIKey: *apiKey}).ChatComplete(ctx, *model, instructions, input)
+	if err != nil {
+		return err
+	}
+	code, err := fencedPython(response)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(*outputPath, []byte(code), 0o644)
+}
+
+func fencedPython(s string) (string, error) {
+	start := strings.Index(s, "```")
+	if start < 0 {
+		return "", errors.New("model returned no fenced solution")
+	}
+	rest := s[start+3:]
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[nl+1:]
+	} else {
+		return "", errors.New("malformed solution fence")
+	}
+	end := strings.Index(rest, "```")
+	if end < 0 {
+		return "", errors.New("unterminated solution fence")
+	}
+	code := strings.TrimSpace(rest[:end])
+	if code == "" {
+		return "", errors.New("empty solution")
+	}
+	return code + "\n", nil
 }
 
 func flags(name string) (*flag.FlagSet, *config.Config, *bool) {
