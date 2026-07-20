@@ -53,7 +53,7 @@ func (r *Row) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &w); err != nil {
 		return err
 	}
-	*r = Row{w.QuestionTitle, w.QuestionContent, w.Platform, w.QuestionID, w.ContestID, w.ContestDate, w.StarterCode, w.Difficulty, w.PublicTestCases, w.PrivateTestCases, w.Metadata}
+	*r = Row(w)
 	return nil
 }
 
@@ -93,7 +93,7 @@ func Sync(ctx context.Context, cacheDir string, offline bool, progress func(stri
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download dataset: %s", resp.Status)
 	}
@@ -127,9 +127,10 @@ func validFile(path, want string) bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	_, copyErr := io.Copy(h, f)
+	closeErr := f.Close()
+	if copyErr != nil || closeErr != nil {
 		return false
 	}
 	return hex.EncodeToString(h.Sum(nil)) == want
@@ -142,7 +143,6 @@ func SelectLatest(path string, maxPrivateBytes int) ([]Row, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 	if maxPrivateBytes <= 0 {
 		maxPrivateBytes = 1 << 20
 	}
@@ -163,6 +163,10 @@ func SelectLatest(path string, maxPrivateBytes int) ([]Row, error) {
 		}
 	}
 	if err := s.Err(); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if err := f.Close(); err != nil {
 		return nil, err
 	}
 	var out []Row

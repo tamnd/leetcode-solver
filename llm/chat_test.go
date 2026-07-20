@@ -17,10 +17,14 @@ func TestChatCompleteJSONAndSSE(t *testing.T) {
 				}
 				if stream {
 					w.Header().Set("Content-Type", "text/event-stream")
-					fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"world\"}}]}\n\ndata: [DONE]\n\n")
+					if _, err := fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"world\"}}]}\n\ndata: [DONE]\n\n"); err != nil {
+						t.Errorf("write SSE response: %v", err)
+					}
 				} else {
 					w.Header().Set("Content-Type", "application/json")
-					fmt.Fprint(w, `{"choices":[{"message":{"content":"hello world"}}]}`)
+					if _, err := fmt.Fprint(w, `{"choices":[{"message":{"content":"hello world"}}]}`); err != nil {
+						t.Errorf("write JSON response: %v", err)
+					}
 				}
 			}))
 			defer srv.Close()

@@ -43,7 +43,7 @@ func (c *Client) ChatComplete(ctx context.Context, model, system, user string) (
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
 		return "", fmt.Errorf("model endpoint: %s: %s", resp.Status, strings.TrimSpace(string(data)))
