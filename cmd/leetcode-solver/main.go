@@ -115,7 +115,7 @@ func syncEvalDataset(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("eval-sync", flag.ContinueOnError)
 	revision := fs.String("revision", "a9eca795817a0a21132070e2dc2e87445da4f089", "pinned Hugging Face dataset revision")
 	versionName := fs.String("version", "v0.3.1", "LeetCodeDataset version")
-	image := fs.String("python-image", "python:3.13-alpine@sha256:0515d7a37d0febc8bd7d88b4879b8598f4e1a1aae16307c733fd34f36be18f15", "preloaded digest-pinned Python image")
+	image := fs.String("python-image", "python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0", "preloaded digest-pinned Python image")
 	fs.StringVar(&cfg.EvalRoot, "eval-root", cfg.EvalRoot, "offline evaluation bundle root")
 	if err := fs.Parse(args); err != nil {
 		return err
