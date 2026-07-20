@@ -134,6 +134,18 @@ leetcode-solver eval --input results.jsonl
 
 The benchmark design and recommended suites are documented in [docs/EVALUATION.md](docs/EVALUATION.md), and the executable format is in [docs/EVAL_BUNDLES.md](docs/EVAL_BUNDLES.md). `eval-sync` imports the pinned LeetCodeDataset Python suites entirely through Go tooling. The verified revision reads 2,869 rows and produces 2,835 runnable bundles with 274,914 assertions while reporting 34 unusable rows as gaps. The primary longitudinal regression suite is recent LiveCodeBench; EvalPlus, BigCodeBench, CodeContests, ICPC-Eval, MultiPL-E, and TestEval probe complementary correctness, performance, repair, language, and test-generation failures.
 
+### Isolated agent comparison
+
+`agent-bench` reproducibly compares this solver with tomo, pi, opencode, Codex, and Claude Code. It downloads a commit-pinned LiveCodeBench v6 split once, verifies its SHA-256, selects the newest eligible LeetCode easy/medium/hard tasks, and then supports a completely offline dataset preparation pass:
+
+```sh
+leetcode-solver agent-bench --prepare-only
+leetcode-solver agent-bench --prepare-only --offline
+leetcode-solver agent-bench
+```
+
+Each pass@1 agent run receives the same visible problem and starter file in a throwaway no-egress container with Python, pytest, and Go preinstalled. Only the model proxy has egress. Hidden tests remain in a sibling host-side oracle and are applied after the agent exits. The default matrix runs DeepSeek through the OpenCode endpoint and `gpt-5.6-luna` through tomo-labs' local Codex-subscription bridge. The report records pass/fail, requests, wall time, peak memory, fresh/cache/cache-write/input/output/reasoning/total tokens, and a clearly labeled list-price estimate. See [docs/AGENT_BENCHMARK.md](docs/AGENT_BENCHMARK.md) for prerequisites, pins, and result interpretation.
+
 No public source contains LeetCode's proprietary hidden cases for every current problem. The coverage command reports exactly which public suite and revision backs each language implementation, its declared test count, and every gap. The project never mislabels generated or mirrored cases as LeetCode's complete hidden suite.
 
 ## Development
