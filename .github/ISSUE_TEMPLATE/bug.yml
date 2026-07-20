@@ -1,0 +1,27 @@
+name: Bug report
+description: Report a reproducible solver defect without including credentials
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Never paste session cookies, CSRF tokens, or API keys.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Include the problem slug, language, command, and sanitized error.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true

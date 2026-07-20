@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "problem_slug": "two-sum",
+  "language": "golang",
+  "dataset": "repository-smoke",
+  "revision": "v1",
+  "image": "golang:1.26.5-alpine@sha256:787328cefd7937073af18fc4b3a725f47e011ffdde9c2908239a25cae6b2f02b",
+  "candidate_file": "solution.go",
+  "candidate_prefix": "package main\n\n",
+  "command": ["go", "test", "-count=1", "solution.go", "solution_test.go"],
+  "files": ["solution_test.go"],
+  "test_count": 10,
+  "timeout_seconds": 20
+}

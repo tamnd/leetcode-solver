@@ -1,0 +1,1 @@
+{"schema_version":1,"problem_slug":"two-sum","language":"python3","dataset":"repository-smoke","revision":"v1","image":"python:3.13-alpine@sha256:0515d7a37d0febc8bd7d88b4879b8598f4e1a1aae16307c733fd34f36be18f15","candidate_file":"solution.py","command":["python3","-I","test_solution.py"],"files":["test_solution.py"],"test_count":3,"timeout_seconds":20}
