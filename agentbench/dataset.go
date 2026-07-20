@@ -22,7 +22,7 @@ const (
 	DatasetSHA256    = "bb4c364f71921c4495a6ad15abe1a927350b720009f4933e2e71f8af0f6fd1f5"
 	DatasetFile      = "test6.jsonl"
 	TomoRevision     = "a999294f812f79b2daac681650c32b638525e2bf"
-	TomoLabsRevision = "c6808df75d9441a75e250f7806ce56cbed2d9dab"
+	TomoLabsRevision = "f80a99db76aa446bc318f6f1edc3541245ab890b"
 )
 
 func DatasetURL(revision string) string {
