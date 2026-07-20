@@ -74,3 +74,15 @@ func TestListCostSeparatesFreshAndCached(t *testing.T) {
 		t.Fatalf("got %v want %v", got, want)
 	}
 }
+
+func TestNormalizePathsMakesContainerMountsAbsolute(t *testing.T) {
+	o, err := normalizePaths(RunOptions{Repository: ".", LabRepository: "../tomo-labs", Workspace: "work", Cache: "cache", Data: "data"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range map[string]string{"repository": o.Repository, "lab": o.LabRepository, "workspace": o.Workspace, "cache": o.Cache, "data": o.Data} {
+		if !filepath.IsAbs(path) {
+			t.Errorf("%s path is relative: %s", name, path)
+		}
+	}
+}

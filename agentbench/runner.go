@@ -31,6 +31,11 @@ func Run(ctx context.Context, o RunOptions) error {
 	if o.Repository == "" || o.LabRepository == "" || o.Workspace == "" || o.Cache == "" || o.Data == "" {
 		return errors.New("repository, lab repository, workspace, cache, and data are required")
 	}
+	var err error
+	o, err = normalizePaths(o)
+	if err != nil {
+		return err
+	}
 	dataset, err := Sync(ctx, o.Cache, o.Offline, o.Progress)
 	if err != nil {
 		return err
@@ -90,6 +95,17 @@ func Run(ctx context.Context, o RunOptions) error {
 		}
 	}
 	return WriteReport(o.Data, filepath.Join(o.Workspace, "benchmark.json"), filepath.Join(o.Workspace, "benchmark.md"))
+}
+
+func normalizePaths(o RunOptions) (RunOptions, error) {
+	for name, target := range map[string]*string{"repository": &o.Repository, "lab repository": &o.LabRepository, "workspace": &o.Workspace, "cache": &o.Cache, "data": &o.Data} {
+		absolute, err := filepath.Abs(*target)
+		if err != nil {
+			return o, fmt.Errorf("resolve %s: %w", name, err)
+		}
+		*target = absolute
+	}
+	return o, nil
 }
 
 func prepareLab(ctx context.Context, o RunOptions, rows []Row) error {
