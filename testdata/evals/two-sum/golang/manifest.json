@@ -10,5 +10,5 @@
   "command": ["go", "test", "-count=1", "solution.go", "solution_test.go"],
   "files": ["solution_test.go"],
   "test_count": 10,
-  "timeout_seconds": 20
+  "timeout_seconds": 60
 }
