@@ -1,7 +1,6 @@
 # leetcode-solver
 
 [![CI](https://github.com/tamnd/leetcode-solver/actions/workflows/ci.yml/badge.svg)](https://github.com/tamnd/leetcode-solver/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/tamnd/leetcode-solver/actions/workflows/codeql.yml/badge.svg)](https://github.com/tamnd/leetcode-solver/actions/workflows/codeql.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/tamnd/leetcode-solver.svg)](https://pkg.go.dev/github.com/tamnd/leetcode-solver)
 [![License](https://img.shields.io/github/license/tamnd/leetcode-solver)](LICENSE)
 
