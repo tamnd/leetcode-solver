@@ -13,5 +13,5 @@ for nums,target,expected in cases:
     answer=module.Solution().twoSum(nums,target)
     assert set(answer)==expected and nums[answer[0]]+nums[answer[1]]==target
     ran += 1
-print("LEETCODE_SOLVER_PASS assertions=%d" % ran)
+print("LEETCODE_SOLVER_PASS {{LEETCODE_SOLVER_NONCE}} assertions=%d" % ran)
 sys.stdout.flush()

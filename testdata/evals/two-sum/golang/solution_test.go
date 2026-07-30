@@ -7,7 +7,7 @@ import (
 
 func TestTwoSum(t *testing.T) {
 	ran := 0
-	defer func() { fmt.Printf("LEETCODE_SOLVER_PASS assertions=%d\n", ran) }()
+	defer func() { fmt.Printf("LEETCODE_SOLVER_PASS {{LEETCODE_SOLVER_NONCE}} assertions=%d\n", ran) }()
 	cases := []struct {
 		nums   []int
 		target int

@@ -113,3 +113,18 @@ jobs:
         run: go run ./cmd/leetcode-solver verify --eval-root ./testdata/evals --container-runtime docker --language python3 --code ./testdata/solutions/two-sum.py two-sum
       - name: Execute Go candidate offline
         run: go run ./cmd/leetcode-solver verify --eval-root ./testdata/evals --container-runtime docker --language golang --code ./testdata/solutions/two-sum.go.txt two-sum
+      # A gate that only ever says yes proves nothing. These two candidates must be
+      # rejected: one is simply wrong, the other announces success and kills the
+      # process before any assertion can run.
+      - name: Reject an incorrect candidate
+        run: |
+          if go run ./cmd/leetcode-solver verify --eval-root ./testdata/evals --container-runtime docker --language golang --code ./testdata/solutions/two-sum-wrong.go.txt two-sum; then
+            echo "an incorrect candidate was accepted by the offline gate" >&2
+            exit 1
+          fi
+      - name: Reject a candidate that forges the completion marker
+        run: |
+          if go run ./cmd/leetcode-solver verify --eval-root ./testdata/evals --container-runtime docker --language python3 --code ./testdata/solutions/two-sum-forged-marker.py two-sum; then
+            echo "a forged completion marker was accepted by the offline gate" >&2
+            exit 1
+          fi

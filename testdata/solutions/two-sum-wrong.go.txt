@@ -1,0 +1,4 @@
+func twoSum(nums []int, target int) []int {
+	// Deliberately wrong: the offline gate must reject this.
+	return []int{0, 0}
+}

@@ -215,12 +215,33 @@ func syncEvalDataset(ctx context.Context, args []string) error {
 	revision := fs.String("revision", "a9eca795817a0a21132070e2dc2e87445da4f089", "pinned Hugging Face dataset revision")
 	versionName := fs.String("version", "v0.3.1", "LeetCodeDataset version")
 	image := fs.String("python-image", "python:3.13-alpine@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0", "preloaded digest-pinned Python image")
+	goImage := fs.String("go-image", "golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2", "preloaded digest-pinned Go image")
+	gapReport := fs.String("go-gaps", "", "write the problems that received no Go bundle, and why, to this JSON path")
 	fs.StringVar(&cfg.EvalRoot, "eval-root", cfg.EvalRoot, "offline evaluation bundle root")
+	fs.StringVar(&cfg.Database, "database", cfg.Database, "problem repository supplying Go starter signatures")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// The dataset rows carry only Python. A Go bundle needs the problem's Go starter
+	// signature, which lives in the problem repository, so the lookup is injected and
+	// the importer stays a pure function of its inputs.
+	signature := func(string) (string, bool) { return "", false }
+	if repository, openErr := source.Open(cfg.Database); openErr == nil {
+		defer func() { _ = repository.Close() }()
+		signature = func(slug string) (string, bool) {
+			p, problemErr := repository.Problem(ctx, slug)
+			if problemErr != nil {
+				return "", false
+			}
+			snippet, ok := p.Snippet("golang")
+			return snippet.Code, ok
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "no problem repository at %s, so no Go bundles will be generated: %v\n", cfg.Database, openErr)
+	}
 	client := &http.Client{Timeout: 30 * time.Minute}
-	totalRows, totalBundles, totalTests := 0, 0, 0
+	totalRows, totalBundles, totalTests, totalGoBundles, totalGoTests := 0, 0, 0, 0, 0
+	var gaps []evaldataset.GoGap
 	for _, split := range []string{"train", "test"} {
 		url := fmt.Sprintf("https://huggingface.co/datasets/newfacade/LeetCodeDataset/resolve/%s/LeetCodeDataset-%s-%s.jsonl", *revision, *versionName, split)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -237,7 +258,7 @@ func syncEvalDataset(ctx context.Context, args []string) error {
 			_ = response.Body.Close()
 			return fmt.Errorf("download %s: %s: %s", split, response.Status, body)
 		}
-		report, importErr := evaldataset.ImportLeetCodeDataset(ctx, response.Body, cfg.EvalRoot, *image, "hf:"+*revision+":"+*versionName)
+		report, importErr := evaldataset.Import(ctx, response.Body, evaldataset.Options{Root: cfg.EvalRoot, PythonImage: *image, GoImage: *goImage, Revision: "hf:" + *revision + ":" + *versionName, GoSignature: signature})
 		_ = response.Body.Close()
 		if importErr != nil {
 			return importErr
@@ -245,9 +266,23 @@ func syncEvalDataset(ctx context.Context, args []string) error {
 		totalRows += report.Rows
 		totalBundles += report.Bundles
 		totalTests += report.Tests
-		fmt.Fprintf(os.Stderr, "imported %s: %d rows, %d bundles, %d tests, %d missing\n", split, report.Rows, report.Bundles, report.Tests, len(report.MissingTests))
+		totalGoBundles += report.GoBundles
+		totalGoTests += report.GoTests
+		gaps = append(gaps, report.GoGaps...)
+		fmt.Fprintf(os.Stderr, "imported %s: %d rows, %d Python bundles, %d Python tests, %d missing, %d Go bundles, %d Go tests, %d Go gaps\n",
+			split, report.Rows, report.Bundles, report.Tests, len(report.MissingTests), report.GoBundles, report.GoTests, len(report.GoGaps))
 	}
-	fmt.Printf("read %d rows; imported %d Python bundles with %d offline tests\n", totalRows, totalBundles, totalTests)
+	if *gapReport != "" {
+		data, err := json.MarshalIndent(gaps, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(*gapReport, append(data, '\n'), 0o600); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("read %d rows; imported %d Python bundles with %d offline tests and %d Go bundles with %d offline tests; %d problems have no Go bundle\n",
+		totalRows, totalBundles, totalTests, totalGoBundles, totalGoTests, len(gaps))
 	return nil
 }
 
@@ -350,8 +385,18 @@ func coverage(ctx context.Context, args []string) error {
 			report.Missing = append(report.Missing, item.Slug+":source")
 			continue
 		}
-		languages, languageErr := chooseLanguages(p, cfg.Language)
-		if languageErr != nil {
+		// Coverage counts what a complete answer owes, not what happens to have a
+		// bundle: filtering by bundle presence here would report full coverage of
+		// whatever was already generated.
+		languages := requiredLanguages(p)
+		if cfg.Language != "auto" {
+			if _, ok := p.Snippet(cfg.Language); !ok {
+				report.Missing = append(report.Missing, item.Slug+":language")
+				continue
+			}
+			languages = []string{cfg.Language}
+		}
+		if len(languages) == 0 {
 			report.Missing = append(report.Missing, item.Slug+":language")
 			continue
 		}
@@ -392,9 +437,12 @@ func solve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	languages, err := chooseLanguages(p, cfg.Language)
+	languages, gaps, err := chooseLanguages(p, cfg.Language, cfg.EvalRoot)
 	if err != nil {
 		return err
+	}
+	for _, language := range gaps {
+		fmt.Fprintf(os.Stderr, "skipping %s: no offline eval bundle under %s, so a %s article could not be proved correct\n", language, cfg.EvalRoot, language)
 	}
 	var results []artifact.Result
 	for _, language := range languages {
@@ -481,7 +529,10 @@ func batch(ctx context.Context, args []string) error {
 			for slug := range jobs {
 				p, err := repository.Problem(ctx, slug)
 				if err == nil {
-					languages, languageErr := chooseLanguages(p, cfg.Language)
+					languages, gaps, languageErr := chooseLanguages(p, cfg.Language, cfg.EvalRoot)
+					for _, language := range gaps {
+						fmt.Fprintf(os.Stderr, "skipping %s %s: no offline eval bundle under %s\n", slug, language, cfg.EvalRoot)
+					}
 					if languageErr != nil {
 						err = languageErr
 					} else {
@@ -531,27 +582,59 @@ func batch(ctx context.Context, args []string) error {
 	return nil
 }
 
-func chooseLanguages(p problem.Problem, requested string) ([]string, error) {
+// chooseLanguages decides what to solve, and returns separately the languages it
+// is declining to attempt. An article may exist only if its code passed a pinned
+// offline bundle, so a language with no bundle on disk cannot produce one: in auto
+// mode it is a reported gap rather than a guaranteed failure that would also throw
+// away the languages that do have bundles. A language named explicitly is never
+// dropped — the caller asked for it and deserves the bundle error.
+func chooseLanguages(p problem.Problem, requested, evalRoot string) (languages, gaps []string, err error) {
 	if requested != "auto" {
 		if _, ok := p.Snippet(requested); ok {
-			return []string{requested}, nil
+			return []string{requested}, nil, nil
 		}
-		return nil, fmt.Errorf("problem %s has no %q starter code", p.Slug, requested)
+		return nil, nil, fmt.Errorf("problem %s has no %q starter code", p.Slug, requested)
 	}
-	_, hasPython := p.Snippet("python3")
-	_, hasGo := p.Snippet("golang")
-	if hasPython && hasGo {
-		return []string{"python3", "golang"}, nil
+	wanted := requiredLanguages(p)
+	if len(wanted) == 0 {
+		return nil, nil, fmt.Errorf("problem %s has no starter code", p.Slug)
 	}
-	for _, language := range []string{"python3", "golang", "mysql", "bash", "java", "javascript"} {
+	for _, language := range wanted {
+		if _, manifestErr := offline.ReadManifest(evalRoot, p.Slug, language); manifestErr != nil {
+			gaps = append(gaps, language)
+			continue
+		}
+		languages = append(languages, language)
+	}
+	if len(languages) == 0 {
+		return nil, gaps, fmt.Errorf("problem %s has starter code for %s but no offline eval bundle for any of them, so no article could be proved correct; generate bundles with eval-sync", p.Slug, strings.Join(wanted, ", "))
+	}
+	return languages, gaps, nil
+}
+
+// requiredLanguages lists the implementations a complete answer owes, most
+// preferred first, ignoring whether a bundle exists yet. Coverage is measured
+// against this list, so a missing bundle counts against the repository instead of
+// quietly shrinking what the repository claims to owe.
+func requiredLanguages(p problem.Problem) []string {
+	var wanted []string
+	for _, language := range []string{"python3", "golang"} {
 		if _, ok := p.Snippet(language); ok {
-			return []string{language}, nil
+			wanted = append(wanted, language)
+		}
+	}
+	if len(wanted) > 0 {
+		return wanted
+	}
+	for _, language := range []string{"mysql", "bash", "java", "javascript"} {
+		if _, ok := p.Snippet(language); ok {
+			return []string{language}
 		}
 	}
 	if len(p.Snippets) > 0 {
-		return []string{p.Snippets[0].LanguageSlug}, nil
+		return []string{p.Snippets[0].LanguageSlug}
 	}
-	return nil, fmt.Errorf("problem %s has no starter code", p.Slug)
+	return nil
 }
 
 func evaluate(args []string) error {

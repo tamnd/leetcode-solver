@@ -24,11 +24,35 @@ type LeetCodeRow struct {
 type ImportReport struct {
 	Rows, Bundles, Tests int
 	MissingTests         []string
+	// GoBundles and GoTests count the Go implementations that could be driven from
+	// the same pinned cases; GoGaps names every problem that could not be, with the
+	// reason, so an unreachable language is a measured debt rather than a surprise.
+	GoBundles, GoTests int
+	GoGaps             []GoGap
+}
+
+// GoGap records a problem whose Go bundle could not be generated.
+type GoGap struct {
+	Slug   string `json:"slug"`
+	Reason string `json:"reason"`
+}
+
+// Options carries what the importer cannot discover from the dataset itself. A Go
+// bundle needs the problem's Go starter signature, which lives in the problem
+// repository rather than in the dataset rows, so the caller supplies a lookup.
+type Options struct {
+	Root, PythonImage, GoImage, Revision string
+	GoSignature                          func(slug string) (string, bool)
 }
 
 var safeSlug = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 func ImportLeetCodeDataset(ctx context.Context, r io.Reader, root, image, revision string) (ImportReport, error) {
+	return Import(ctx, r, Options{Root: root, PythonImage: image, Revision: revision})
+}
+
+func Import(ctx context.Context, r io.Reader, options Options) (ImportReport, error) {
+	root, image, revision := options.Root, options.PythonImage, options.Revision
 	var report ImportReport
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 64*1024*1024)
@@ -66,8 +90,59 @@ func ImportLeetCodeDataset(ctx context.Context, r io.Reader, root, image, revisi
 		}
 		report.Bundles++
 		report.Tests += tests
+		if err := writeGoBundle(row, options, &report); err != nil {
+			return report, err
+		}
 	}
 	return report, scanner.Err()
+}
+
+// writeGoBundle generates the Go implementation's bundle from the same pinned cases
+// the Python bundle uses. Every refusal is recorded as a gap and none is fatal: a
+// problem whose Go harness cannot be generated must not stop the import of the rest
+// of the dataset, but it must also never pass silently.
+func writeGoBundle(row LeetCodeRow, options Options, report *ImportReport) error {
+	if options.GoSignature == nil || options.GoImage == "" {
+		return nil
+	}
+	snippet, ok := options.GoSignature(row.TaskID)
+	if !ok {
+		report.GoGaps = append(report.GoGaps, GoGap{Slug: row.TaskID, Reason: "no Go starter code in the problem repository"})
+		return nil
+	}
+	signature, err := parseGoSignature(snippet)
+	if err != nil {
+		report.GoGaps = append(report.GoGaps, GoGap{Slug: row.TaskID, Reason: err.Error()})
+		return nil
+	}
+	cases, err := extractCases(row.Test)
+	if err != nil {
+		report.GoGaps = append(report.GoGaps, GoGap{Slug: row.TaskID, Reason: err.Error()})
+		return nil
+	}
+	harness, err := goHarness(signature, cases)
+	if err != nil {
+		report.GoGaps = append(report.GoGaps, GoGap{Slug: row.TaskID, Reason: err.Error()})
+		return nil
+	}
+	dir := filepath.Join(options.Root, row.TaskID, "golang")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "solution_test.go"), []byte(harness), 0o600); err != nil {
+		return err
+	}
+	manifest := goManifest(row.TaskID, options.GoImage, "newfacade/LeetCodeDataset", options.Revision, len(cases))
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	report.GoBundles++
+	report.GoTests += len(cases)
+	return nil
 }
 
 // pythonHarness wraps the dataset's own check function. Two properties matter more
@@ -108,7 +183,7 @@ _load_candidate()
 check(_CountedCandidate(` + row.EntryPoint + `))
 if _calls < 1:
     raise AssertionError("the dataset check ran no assertion against the candidate")
-print("` + offline.PassMarker + ` assertions=%d" % _calls)
+print("` + offline.PassMarker + ` ` + offline.NoncePlaceholder + ` assertions=%d" % _calls)
 sys.stdout.flush()
 `
 }
