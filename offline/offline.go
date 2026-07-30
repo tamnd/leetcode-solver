@@ -2,7 +2,10 @@
 package offline
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,9 +13,69 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// SchemaVersion is the only bundle schema this runner executes. Version 2 added
+// the mandatory completion marker; version 3 authenticates it with a per-run nonce.
+const SchemaVersion = 3
+
+// PassMarker is the token a bundle harness prints on its own line after the last
+// assertion has run. A zero exit status alone is not evidence of correctness: a
+// candidate that raises SystemExit while it is being imported, or a harness whose
+// assertions were never reached, both exit zero. The runner therefore requires
+// the marker and the executed assertion count it carries.
+const PassMarker = "LEETCODE_SOLVER_PASS"
+
+// NoncePlaceholder is substituted for a fresh random token in every harness file
+// each time a bundle runs. The marker is only believed when it carries that token.
+//
+// This authenticates the marker against the realistic failure: a candidate that
+// prints a hardcoded success line and exits zero before any assertion runs. It is
+// not proof against a candidate that deliberately reads the harness source next to
+// it, because candidate code shares a process with the harness and can read
+// anything that process can. Closing that remaining gap needs a two-process bundle
+// protocol in which the expected values never enter the candidate's process.
+const NoncePlaceholder = "{{LEETCODE_SOLVER_NONCE}}"
+
+// markerPattern matches only a marker bearing this run's nonce. Leading whitespace
+// is tolerated because `go test -v` indents whatever a running test writes; the
+// marker still has to own its line, so it cannot be smuggled into another sentence.
+func markerPattern(nonce string) *regexp.Regexp {
+	return regexp.MustCompile(`(?m)^[ \t]*` + PassMarker + ` ` + regexp.QuoteMeta(nonce) + ` assertions=([0-9]+)[ \t]*\r?$`)
+}
+
+func newNonce() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate eval nonce: %w", err)
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+// terminators are the ways a candidate can end the process while reporting success.
+// A LeetCode solution body has no reason to contain any of them, and a candidate
+// that does cannot be distinguished from one gaming the completion marker.
+var terminators = map[string][]string{
+	"python3": {"sys.exit", "os._exit", "os.abort", "exit(", "quit("},
+	"golang":  {"os.Exit", "syscall.Exit", "runtime.Goexit"},
+}
+
+// screenCandidate refuses code that would let a candidate decide its own verdict.
+func screenCandidate(language, code string) error {
+	for _, token := range terminators[language] {
+		if strings.Contains(code, token) {
+			return fmt.Errorf("candidate calls %s, which would end the process before the harness could report what it executed; a solution must return its answer instead", strings.TrimSuffix(token, "("))
+		}
+	}
+	if strings.Contains(code, PassMarker) {
+		return fmt.Errorf("candidate contains the completion marker %q, which only the harness may print", PassMarker)
+	}
+	return nil
+}
 
 type Manifest struct {
 	SchemaVersion   int      `json:"schema_version"`
@@ -30,14 +93,17 @@ type Manifest struct {
 	TimeoutSeconds  int      `json:"timeout_seconds"`
 }
 type Result struct {
-	Passed    bool          `json:"passed"`
-	TestCount int           `json:"test_count"`
-	Dataset   string        `json:"dataset"`
-	Revision  string        `json:"revision"`
-	Image     string        `json:"image"`
-	Command   []string      `json:"command"`
-	Output    string        `json:"output"`
-	Elapsed   time.Duration `json:"elapsed"`
+	Passed bool `json:"passed"`
+	// TestCount is the count the bundle declares. AssertionsRun is the count the
+	// harness reported actually executing, which is the honest number to publish.
+	TestCount     int           `json:"test_count"`
+	AssertionsRun int           `json:"assertions_run"`
+	Dataset       string        `json:"dataset"`
+	Revision      string        `json:"revision"`
+	Image         string        `json:"image"`
+	Command       []string      `json:"command"`
+	Output        string        `json:"output"`
+	Elapsed       time.Duration `json:"elapsed"`
 }
 type Runner struct {
 	Root, DockerBinary string
@@ -76,11 +142,24 @@ func (r Runner) Verify(ctx context.Context, slug, language, code string) (Result
 	if err := os.Chmod(work, 0o755); err != nil {
 		return Result{}, fmt.Errorf("make eval workspace container-readable: %w", err)
 	}
+	if err := screenCandidate(language, code); err != nil {
+		return Result{}, err
+	}
+	nonce, err := newNonce()
+	if err != nil {
+		return Result{}, err
+	}
 	bundleDir := filepath.Dir(manifestPath)
+	authenticated := false
 	for _, name := range manifest.Files {
-		if err := safeCopy(bundleDir, work, name); err != nil {
+		carried, err := safeCopy(bundleDir, work, name, nonce)
+		if err != nil {
 			return Result{}, err
 		}
+		authenticated = authenticated || carried
+	}
+	if !authenticated {
+		return Result{}, fmt.Errorf("no harness file in the %s/%s bundle contains %s, so its completion marker could not be authenticated; regenerate the bundle with eval-sync", slug, language, NoncePlaceholder)
 	}
 	if err := safeWrite(work, manifest.CandidateFile, []byte(manifest.CandidatePrefix+code+manifest.CandidateSuffix)); err != nil {
 		return Result{}, err
@@ -113,7 +192,8 @@ func (r Runner) Verify(ctx context.Context, slug, language, code string) (Result
 	if len(output) > limit {
 		output = output[len(output)-limit:]
 	}
-	result := Result{Passed: runErr == nil, TestCount: manifest.TestCount, Dataset: manifest.Dataset, Revision: manifest.Revision, Image: manifest.Image, Command: manifest.Command, Output: string(output), Elapsed: time.Since(started).Round(time.Millisecond)}
+	assertions, marked := completion(output, nonce)
+	result := Result{Passed: runErr == nil && marked, TestCount: manifest.TestCount, AssertionsRun: assertions, Dataset: manifest.Dataset, Revision: manifest.Revision, Image: manifest.Image, Command: manifest.Command, Output: string(output), Elapsed: time.Since(started).Round(time.Millisecond)}
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		result.Passed = false
 		return result, fmt.Errorf("offline eval timed out after %ds", timeout)
@@ -121,7 +201,30 @@ func (r Runner) Verify(ctx context.Context, slug, language, code string) (Result
 	if runErr != nil {
 		return result, fmt.Errorf("offline eval failed: %w\n%s", runErr, strings.TrimSpace(result.Output))
 	}
+	if !marked {
+		result.Passed = false
+		return result, fmt.Errorf("offline eval exited zero without printing an authenticated %q line, so no assertion is known to have run:\n%s", PassMarker, strings.TrimSpace(result.Output))
+	}
+	if assertions < manifest.TestCount {
+		result.Passed = false
+		return result, fmt.Errorf("offline eval ran %d of the %d assertions the bundle declares, so this bundle cannot establish correctness", assertions, manifest.TestCount)
+	}
 	return result, nil
+}
+
+// completion reports the executed assertion count a harness published under this
+// run's nonce. The runner keeps the trailing bytes of a truncated log precisely so
+// this final line survives.
+func completion(output []byte, nonce string) (int, bool) {
+	match := markerPattern(nonce).FindAllSubmatch(output, -1)
+	if len(match) == 0 {
+		return 0, false
+	}
+	count, err := strconv.Atoi(string(match[len(match)-1][1]))
+	if err != nil {
+		return 0, false
+	}
+	return count, true
 }
 
 func containerArgs(work string, manifest Manifest) []string {
@@ -135,8 +238,8 @@ func containerArgs(work string, manifest Manifest) []string {
 }
 
 func validate(m Manifest, slug, language string) error {
-	if m.SchemaVersion != 1 {
-		return fmt.Errorf("unsupported eval schema %d", m.SchemaVersion)
+	if m.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("unsupported eval schema %d, want %d; regenerate the bundle with eval-sync", m.SchemaVersion, SchemaVersion)
 	}
 	if m.ProblemSlug != slug || m.Language != language {
 		return fmt.Errorf("eval identity mismatch: got %s/%s, want %s/%s", m.ProblemSlug, m.Language, slug, language)
@@ -158,26 +261,34 @@ func validate(m Manifest, slug, language string) error {
 	if m.TestCount < 1 {
 		return errors.New("eval manifest must declare at least one test")
 	}
+	if m.Command[0] == "go" && slices.Contains(m.Command, "test") && !slices.Contains(m.Command, "-v") {
+		return errors.New("a `go test` command must pass -v: cmd/go discards a passing package's stdout, which would hide the completion marker and fail every correct candidate")
+	}
 	return nil
 }
-func safeCopy(fromRoot, toRoot, name string) error {
+
+// safeCopy stages one harness file, substituting this run's nonce, and reports
+// whether the file carried the placeholder at all.
+func safeCopy(fromRoot, toRoot, name, nonce string) (bool, error) {
 	clean, err := cleanRelativePath(name)
 	if err != nil {
-		return err
+		return false, err
 	}
 	source := filepath.Join(fromRoot, clean)
 	info, err := os.Lstat(source)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("eval file %q must be a regular file", name)
+		return false, fmt.Errorf("eval file %q must be a regular file", name)
 	}
 	data, err := os.ReadFile(source)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return safeWrite(toRoot, clean, data)
+	carried := bytes.Contains(data, []byte(NoncePlaceholder))
+	data = bytes.ReplaceAll(data, []byte(NoncePlaceholder), []byte(nonce))
+	return carried, safeWrite(toRoot, clean, data)
 }
 func safeWrite(root, name string, data []byte) error {
 	clean, err := cleanRelativePath(name)

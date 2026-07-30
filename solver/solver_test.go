@@ -2,7 +2,11 @@ package solver
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tamnd/leetcode-solver/artifact"
@@ -12,20 +16,34 @@ import (
 	"github.com/tamnd/leetcode-solver/problem"
 )
 
-type scriptedLLM struct{ calls int }
+// scriptedLLM answers per phase rather than per call index, so a test states which
+// stage it is scripting and stays readable when a stage is added.
+type scriptedLLM struct {
+	calls  int
+	script map[string][]string
+	seen   map[string]int
+	// fail makes a named phase return a transport error instead of an answer, so a
+	// test can model an unreachable endpoint at one specific stage.
+	fail map[string]error
+}
 
-func (s *scriptedLLM) Complete(_ context.Context, _ llm.Request) (llm.Response, error) {
+func newScriptedLLM(script map[string][]string) *scriptedLLM {
+	return &scriptedLLM{script: script, seen: map[string]int{}}
+}
+
+func (s *scriptedLLM) Complete(_ context.Context, r llm.Request) (llm.Response, error) {
 	s.calls++
-	switch s.calls {
-	case 1:
-		return llm.Response{Text: "reference"}, nil
-	case 2, 3:
-		return llm.Response{Text: validResponse(fmt.Sprint(s.calls))}, nil
-	case 4:
-		return llm.Response{Text: "SELECTED: 2"}, nil
-	default:
-		return llm.Response{}, fmt.Errorf("unexpected call %d", s.calls)
+	phase := strings.TrimPrefix(r.Metadata["task"], "leetcode-")
+	index := s.seen[phase]
+	s.seen[phase]++
+	if err := s.fail[phase]; err != nil {
+		return llm.Response{}, err
 	}
+	queue := s.script[phase]
+	if index >= len(queue) {
+		return llm.Response{}, fmt.Errorf("unscripted %s call %d", phase, index+1)
+	}
+	return llm.Response{Text: queue[index]}, nil
 }
 
 type acceptingJudge struct{ calls int }
@@ -39,8 +57,23 @@ type passingOffline struct{ calls int }
 
 func (o *passingOffline) Verify(_ context.Context, _, _, _ string) (offline.Result, error) {
 	o.calls++
-	return offline.Result{Passed: true, TestCount: 100, Dataset: "unit", Revision: "1"}, nil
+	return offline.Result{Passed: true, TestCount: 100, AssertionsRun: 100, Dataset: "unit", Revision: "1"}, nil
 }
+
+// codeGatedOffline passes only the candidate bodies it was told to pass.
+type codeGatedOffline struct {
+	passing map[string]bool
+	seen    []string
+}
+
+func (o *codeGatedOffline) Verify(_ context.Context, _, _, code string) (offline.Result, error) {
+	o.seen = append(o.seen, code)
+	if !o.passing[code] {
+		return offline.Result{Passed: false, Output: "assertion failed"}, nil
+	}
+	return offline.Result{Passed: true, TestCount: 100, AssertionsRun: 100, Dataset: "unit", Revision: "1"}, nil
+}
+
 func validResponse(code string) string {
 	return `<CODE>` + code + `</CODE><SOLUTION>
 ## Problem Understanding
@@ -64,29 +97,187 @@ x
 x
 </SOLUTION>`
 }
+
+func pythonProblem() problem.Problem {
+	return problem.Problem{ID: "1", FrontendID: "1", Slug: "x", Title: "X", Snippets: []problem.CodeSnippet{{Language: "Python3", LanguageSlug: "python3", Code: "starter"}}}
+}
+
 func TestSolveSelectsAndAccepts(t *testing.T) {
-	model := &scriptedLLM{}
+	model := newScriptedLLM(map[string][]string{
+		"reference":     {"reference"},
+		"candidate":     {validResponse("2"), validResponse("3")},
+		"select":        {"SELECTED: 2"},
+		"criteria":      {"no defects\nVERDICT: PASS"},
+		"falsification": {"every attack failed\nVERDICT: PASS"},
+	})
 	runner := &acceptingJudge{}
 	offlineRunner := &passingOffline{}
-	engine := Engine{Client: model, Judge: runner, Offline: offlineRunner, Store: artifact.Store{Root: t.TempDir()}}
-	p := problem.Problem{ID: "1", FrontendID: "1", Slug: "x", Title: "X", Snippets: []problem.CodeSnippet{{Language: "Python3", LanguageSlug: "python3", Code: "starter"}}}
-	got, err := engine.Solve(context.Background(), p, Options{Model: "m", Language: "python3", Candidates: 2, MaxRepairs: 0, Force: true, Submit: true})
+	root := t.TempDir()
+	engine := Engine{Client: model, Judge: runner, Offline: offlineRunner, Store: artifact.Store{Root: root}}
+	got, err := engine.Solve(context.Background(), pythonProblem(), Options{Model: "m", Language: "python3", Candidates: 2, Force: true, Submit: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.Accepted || got.Code != "3" || runner.calls != 3 || offlineRunner.calls != 2 {
-		t.Fatalf("%+v calls=%d", got, runner.calls)
+	if !got.Accepted || !got.Verified || got.Code != "3" || runner.calls != 3 || offlineRunner.calls != 2 {
+		t.Fatalf("%+v judge_calls=%d offline_calls=%d", got, runner.calls, offlineRunner.calls)
+	}
+	if len(got.Quality) != 2 || !got.Quality[0].Pass || !got.Quality[1].Pass {
+		t.Fatalf("quality=%+v", got.Quality)
+	}
+	if _, err := os.Stat(filepath.Join(root, "x", "python3.md")); err != nil {
+		t.Fatalf("verified solution was not published: %v", err)
+	}
+}
+
+func TestSolveWithholdsPublicationWhenAJudgeRejectsTheArticle(t *testing.T) {
+	model := newScriptedLLM(map[string][]string{
+		"reference":     {"reference"},
+		"candidate":     {validResponse("2")},
+		"criteria":      {"the stated complexity is wrong\nVERDICT: FAIL"},
+		"falsification": {"no defect found\nVERDICT: PASS"},
+	})
+	root := t.TempDir()
+	engine := Engine{Client: model, Offline: &passingOffline{}, Store: artifact.Store{Root: root}}
+	got, err := engine.Solve(context.Background(), pythonProblem(), Options{Model: "m", Language: "python3", Candidates: 1, Force: true})
+	if err == nil {
+		t.Fatal("expected a rejected article to fail the solve")
+	}
+	if !got.Accepted || got.Verified {
+		t.Fatalf("accepted=%t verified=%t", got.Accepted, got.Verified)
+	}
+	if _, err := os.Stat(filepath.Join(root, "x", "python3.md")); !os.IsNotExist(err) {
+		t.Fatal("an article rejected by a quality judge was published")
+	}
+	if _, err := os.Stat(filepath.Join(root, "x", "python3.json")); err != nil {
+		t.Fatalf("the audit record was not saved: %v", err)
+	}
+}
+
+func TestSolveTreatsAMissingVerdictAsRejection(t *testing.T) {
+	model := newScriptedLLM(map[string][]string{
+		"reference":     {"reference"},
+		"candidate":     {validResponse("2")},
+		"criteria":      {"this article looks excellent to me"},
+		"falsification": {"VERDICT: PASS"},
+	})
+	engine := Engine{Client: model, Offline: &passingOffline{}, Store: artifact.Store{Root: t.TempDir()}}
+	got, _ := engine.Solve(context.Background(), pythonProblem(), Options{Model: "m", Language: "python3", Candidates: 1, Force: true})
+	if got.Verified {
+		t.Fatal("a judge that stated no verdict was treated as a pass")
+	}
+}
+
+func TestSolveRewritesTheArticleAndRejudgesIt(t *testing.T) {
+	model := newScriptedLLM(map[string][]string{
+		"reference":     {"reference"},
+		"candidate":     {validResponse("2")},
+		"criteria":      {"example 2 is traced wrongly\nVERDICT: FAIL", "VERDICT: PASS"},
+		"falsification": {"VERDICT: PASS", "VERDICT: PASS"},
+		"rewrite":       {validResponse("2")},
+	})
+	engine := Engine{Client: model, Offline: &passingOffline{}, Store: artifact.Store{Root: t.TempDir()}}
+	got, err := engine.Solve(context.Background(), pythonProblem(), Options{Model: "m", Language: "python3", Candidates: 1, MaxCorrections: 1, Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Verified || model.seen["rewrite"] != 1 || model.seen["criteria"] != 2 {
+		t.Fatalf("verified=%t rewrites=%d criteria=%d", got.Verified, model.seen["rewrite"], model.seen["criteria"])
+	}
+}
+
+func TestSolveDiscardsARewriteWhoseCodeNoLongerPasses(t *testing.T) {
+	model := newScriptedLLM(map[string][]string{
+		"reference":     {"reference"},
+		"candidate":     {validResponse("good")},
+		"criteria":      {"VERDICT: FAIL"},
+		"falsification": {"VERDICT: PASS"},
+		"rewrite":       {validResponse("regressed")},
+	})
+	offlineRunner := &codeGatedOffline{passing: map[string]bool{"good": true}}
+	engine := Engine{Client: model, Offline: offlineRunner, Store: artifact.Store{Root: t.TempDir()}}
+	got, _ := engine.Solve(context.Background(), pythonProblem(), Options{Model: "m", Language: "python3", Candidates: 1, MaxCorrections: 1, Force: true})
+	if got.Verified {
+		t.Fatal("a rewrite that broke execution was accepted")
+	}
+	if got.Code != "good" {
+		t.Fatalf("unverified code replaced the executed code: %q", got.Code)
+	}
+}
+
+func TestSolveOffersOnlyExecutedCandidatesToTheSelector(t *testing.T) {
+	model := newScriptedLLM(map[string][]string{
+		"reference":     {"reference"},
+		"candidate":     {validResponse("broken"), validResponse("works")},
+		"criteria":      {"VERDICT: PASS"},
+		"falsification": {"VERDICT: PASS"},
+	})
+	offlineRunner := &codeGatedOffline{passing: map[string]bool{"works": true}}
+	engine := Engine{Client: model, Offline: offlineRunner, Store: artifact.Store{Root: t.TempDir()}}
+	got, err := engine.Solve(context.Background(), pythonProblem(), Options{Model: "m", Language: "python3", Candidates: 2, Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One candidate survived execution, so no selection call is scripted or needed.
+	if got.Code != "works" || model.seen["select"] != 0 {
+		t.Fatalf("code=%q select_calls=%d", got.Code, model.seen["select"])
+	}
+}
+
+// A population exists so that one weak draw does not decide the run. A candidate
+// that answers off-contract is skipped, and the compliant one still publishes.
+func TestSolveSkipsARefusedCandidateAndUsesTheCompliantOne(t *testing.T) {
+	model := newScriptedLLM(map[string][]string{
+		"reference":     {"reference"},
+		"candidate":     {"an apology with no CODE block", validResponse("works")},
+		"criteria":      {"VERDICT: PASS"},
+		"falsification": {"VERDICT: PASS"},
+	})
+	engine := Engine{Client: model, Offline: &passingOffline{}, Store: artifact.Store{Root: t.TempDir()}}
+	got, err := engine.Solve(context.Background(), pythonProblem(), Options{Model: "m", Language: "python3", Candidates: 2, Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Code != "works" || !got.Accepted || !got.Verified {
+		t.Fatalf("code=%q accepted=%v verified=%v", got.Code, got.Accepted, got.Verified)
+	}
+	// The refusal has to stay in the audit, or a later reader cannot tell a skipped
+	// candidate from one that was never requested.
+	found := false
+	for _, attempt := range got.Attempts {
+		if attempt.Phase == "candidate" && attempt.Error != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the refused candidate was not recorded in the audit")
+	}
+}
+
+// When every candidate is refused there is nothing to execute, and the run must
+// fail with the reason the last one gave rather than a generic message.
+func TestSolveFailsWithTheReasonWhenEveryCandidateIsRefused(t *testing.T) {
+	model := newScriptedLLM(map[string][]string{
+		"reference": {"reference"},
+		"candidate": {"no code here", "still no code"},
+	})
+	engine := Engine{Client: model, Offline: &passingOffline{}, Store: artifact.Store{Root: t.TempDir()}}
+	_, err := engine.Solve(context.Background(), pythonProblem(), Options{Model: "m", Language: "python3", Candidates: 2, Force: true})
+	if err == nil {
+		t.Fatal("a run with no usable candidate was accepted")
+	}
+	if !strings.Contains(err.Error(), "candidate 2") {
+		t.Errorf("err = %v, want the last refusal named", err)
 	}
 }
 
 func TestSolveReverifiesCachedCandidate(t *testing.T) {
 	store := artifact.Store{Root: t.TempDir()}
-	p := problem.Problem{ID: "1", FrontendID: "1", Slug: "x", Title: "X"}
-	cached := artifact.Result{Problem: p, Language: "python3", Model: "m", Code: "cached", Explanation: "accepted", Accepted: true}
+	p := pythonProblem()
+	cached := artifact.Result{Problem: p, Language: "python3", Model: "m", Code: "cached", Explanation: "accepted", Accepted: true, Verified: true}
 	if err := store.Save(cached); err != nil {
 		t.Fatal(err)
 	}
-	model := &scriptedLLM{}
+	model := newScriptedLLM(nil)
 	offlineRunner := &passingOffline{}
 	engine := Engine{Client: model, Offline: offlineRunner, Store: store}
 	got, err := engine.Solve(context.Background(), p, Options{Model: "m", Language: "python3"})
@@ -98,14 +289,36 @@ func TestSolveReverifiesCachedCandidate(t *testing.T) {
 	}
 }
 
+func TestSolveResolvesACachedRecordThatWasNeverVerified(t *testing.T) {
+	store := artifact.Store{Root: t.TempDir()}
+	p := pythonProblem()
+	if err := store.Save(artifact.Result{Problem: p, Language: "python3", Model: "m", Code: "cached", Explanation: "draft", Accepted: true}); err != nil {
+		t.Fatal(err)
+	}
+	model := newScriptedLLM(map[string][]string{
+		"reference":     {"reference"},
+		"candidate":     {validResponse("fresh")},
+		"criteria":      {"VERDICT: PASS"},
+		"falsification": {"VERDICT: PASS"},
+	})
+	engine := Engine{Client: model, Offline: &passingOffline{}, Store: store}
+	got, err := engine.Solve(context.Background(), p, Options{Model: "m", Language: "python3", Candidates: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Code != "fresh" || !got.Verified {
+		t.Fatalf("an accepted but unverified record short-circuited the solve: %+v", got)
+	}
+}
+
 func TestSolveSubmitsCachedCandidateWhenRequested(t *testing.T) {
 	store := artifact.Store{Root: t.TempDir()}
-	p := problem.Problem{ID: "1", FrontendID: "1", Slug: "x", Title: "X"}
-	cached := artifact.Result{Problem: p, Language: "python3", Model: "m", Code: "cached", Explanation: "accepted", Accepted: true}
+	p := pythonProblem()
+	cached := artifact.Result{Problem: p, Language: "python3", Model: "m", Code: "cached", Explanation: "accepted", Accepted: true, Verified: true}
 	if err := store.Save(cached); err != nil {
 		t.Fatal(err)
 	}
-	model := &scriptedLLM{}
+	model := newScriptedLLM(nil)
 	offlineRunner := &passingOffline{}
 	runner := &acceptingJudge{}
 	engine := Engine{Client: model, Judge: runner, Offline: offlineRunner, Store: store}
@@ -115,5 +328,70 @@ func TestSolveSubmitsCachedCandidateWhenRequested(t *testing.T) {
 	}
 	if got.SubmissionID != 99 || offlineRunner.calls != 1 || runner.calls != 1 || model.calls != 0 {
 		t.Fatalf("got=%+v offline_calls=%d judge_calls=%d model_calls=%d", got, offlineRunner.calls, runner.calls, model.calls)
+	}
+}
+
+// A repair that answers off-contract is one bad response inside a bounded repair
+// budget. Failing the whole run on it throws away a candidate that may already be
+// the best available and, worse, loses the audit that explains the outcome.
+func TestSolveDiscardsAMalformedRepairInsteadOfFailingTheRun(t *testing.T) {
+	model := newScriptedLLM(map[string][]string{
+		"reference": {"reference"},
+		"candidate": {validResponse("broken")},
+		"repair":    {"an apology with no CODE block"},
+	})
+	engine := Engine{Client: model, Offline: &codeGatedOffline{passing: map[string]bool{}}, Store: artifact.Store{Root: t.TempDir()}}
+	got, err := engine.Solve(context.Background(), pythonProblem(), Options{Model: "m", Language: "python3", Candidates: 1, MaxRepairs: 1, Force: true})
+	if err == nil || !strings.Contains(err.Error(), "not accepted") {
+		t.Fatalf("err = %v, want the run reported as unaccepted rather than as a parse failure", err)
+	}
+	if got.Accepted {
+		t.Error("a candidate that never passed execution was accepted")
+	}
+	// The audit is the only place the malformed repair can still be read.
+	found := false
+	for _, attempt := range got.Attempts {
+		if attempt.Phase == "repair" && attempt.Error != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the malformed repair was not recorded in the audit")
+	}
+}
+
+// The candidates are generated and executed before any judge runs, and that
+// evidence is the expensive part of a solve. A gateway that fails during judging
+// must not erase it: the audit is written with the executed candidates, and the
+// missing verdict is reported rather than the run vanishing.
+func TestSolveSavesTheAuditWhenAJudgeCannotBeReached(t *testing.T) {
+	model := newScriptedLLM(map[string][]string{
+		"reference": {"reference"},
+		"candidate": {validResponse("works")},
+		"criteria":  {""},
+	})
+	model.fail = map[string]error{"criteria": errors.New("model endpoint: 500 Internal Server Error")}
+	store := artifact.Store{Root: t.TempDir()}
+	engine := Engine{Client: model, Offline: &passingOffline{}, Store: store}
+	got, err := engine.Solve(context.Background(), pythonProblem(), Options{Model: "m", Language: "python3", Candidates: 1, Force: true})
+	if err == nil || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("err = %v, want the endpoint failure reported", err)
+	}
+	if !strings.Contains(err.Error(), "saved") {
+		t.Errorf("err = %v, want the caller told the audit survived", err)
+	}
+	if got.Verified {
+		t.Error("an unjudged article was marked verified")
+	}
+	// The executed evidence is what must survive on disk.
+	saved, loadErr := store.Load(pythonProblem().Slug, "python3")
+	if loadErr != nil {
+		t.Fatalf("the audit was not saved: %v", loadErr)
+	}
+	if len(saved.Candidates) != 1 || !saved.Candidates[0].Offline.Passed {
+		t.Errorf("saved audit lost the executed candidate: %+v", saved.Candidates)
+	}
+	if !saved.Accepted || saved.Verified {
+		t.Errorf("saved accepted=%v verified=%v, want accepted and unverified", saved.Accepted, saved.Verified)
 	}
 }

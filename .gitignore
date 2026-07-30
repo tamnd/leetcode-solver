@@ -31,3 +31,9 @@ go.work.sum
 # .idea/
 # .vscode/
 .cache/
+
+# macOS
+.DS_Store
+
+# Build output of the Makefile
+/bin/

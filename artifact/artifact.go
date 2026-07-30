@@ -25,24 +25,49 @@ type Candidate struct {
 	Submission  judge.Result   `json:"submission_result"`
 	Offline     offline.Result `json:"offline_result"`
 }
+
+// Verdict records one quality judge's decision over the final article. Both the
+// reference-grounded and the reference-blind judge must pass before publication.
+type Verdict struct {
+	Name     string       `json:"name"`
+	Pass     bool         `json:"pass"`
+	Report   string       `json:"report"`
+	Response llm.Response `json:"response"`
+	At       time.Time    `json:"at"`
+}
+
 type Attempt struct {
 	Phase    string        `json:"phase"`
 	Number   int           `json:"number,omitempty"`
 	Response llm.Response  `json:"response"`
 	Judge    *judge.Result `json:"judge,omitempty"`
-	At       time.Time     `json:"at"`
+	// Error records why a phase produced nothing usable. A run that skipped a
+	// refused candidate and one that never generated it are different events, and
+	// only the audit can tell them apart afterwards.
+	Error string    `json:"error,omitempty"`
+	At    time.Time `json:"at"`
 }
 type Result struct {
-	Problem                problem.Problem `json:"problem"`
-	Language, Model        string
-	Code                   string         `json:"code"`
-	Explanation            string         `json:"explanation_md"`
+	Problem         problem.Problem `json:"problem"`
+	Language, Model string
+	Code            string `json:"code"`
+	Explanation     string `json:"explanation_md"`
+	// Accepted is the execution verdict: the exact stored code passed its suite.
+	// Verified is the article verdict: both quality judges passed the prose that
+	// ships with that code. Publication requires both.
 	Accepted               bool           `json:"accepted"`
+	Verified               bool           `json:"verified"`
 	SubmissionID           int64          `json:"submission_id,omitempty"`
 	Offline                offline.Result `json:"offline_result"`
 	Candidates             []Candidate    `json:"candidates"`
+	Quality                []Verdict      `json:"quality"`
 	Attempts               []Attempt      `json:"attempts"`
 	StartedAt, CompletedAt time.Time
+}
+
+// Publishable reports whether this record may become a Markdown article.
+func (r Result) Publishable() bool {
+	return r.Accepted && r.Verified && strings.TrimSpace(r.Code) != "" && strings.TrimSpace(r.Explanation) != ""
 }
 
 type Store struct{ Root string }
@@ -72,7 +97,7 @@ func (s Store) Save(value Result) error {
 	if err := atomicWrite(s.path(value.Problem.Slug, value.Language, "json"), data); err != nil {
 		return err
 	}
-	if !value.Accepted {
+	if !value.Publishable() {
 		return nil
 	}
 	markdown := strings.TrimSpace(value.Explanation) + "\n"
@@ -84,8 +109,8 @@ func (s Store) Save(value Result) error {
 func (s Store) SaveCombined(slug string, results []Result) (string, error) {
 	var python, golang *Result
 	for i := range results {
-		if !results[i].Accepted {
-			return "", errors.New("cannot combine an unaccepted solution")
+		if !results[i].Publishable() {
+			return "", errors.New("cannot combine a solution that is not both accepted and verified")
 		}
 		switch results[i].Language {
 		case "python3":
