@@ -2,6 +2,7 @@ package solver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,6 +22,9 @@ type scriptedLLM struct {
 	calls  int
 	script map[string][]string
 	seen   map[string]int
+	// fail makes a named phase return a transport error instead of an answer, so a
+	// test can model an unreachable endpoint at one specific stage.
+	fail map[string]error
 }
 
 func newScriptedLLM(script map[string][]string) *scriptedLLM {
@@ -32,6 +36,9 @@ func (s *scriptedLLM) Complete(_ context.Context, r llm.Request) (llm.Response, 
 	phase := strings.TrimPrefix(r.Metadata["task"], "leetcode-")
 	index := s.seen[phase]
 	s.seen[phase]++
+	if err := s.fail[phase]; err != nil {
+		return llm.Response{}, err
+	}
 	queue := s.script[phase]
 	if index >= len(queue) {
 		return llm.Response{}, fmt.Errorf("unscripted %s call %d", phase, index+1)
@@ -350,5 +357,41 @@ func TestSolveDiscardsAMalformedRepairInsteadOfFailingTheRun(t *testing.T) {
 	}
 	if !found {
 		t.Error("the malformed repair was not recorded in the audit")
+	}
+}
+
+// The candidates are generated and executed before any judge runs, and that
+// evidence is the expensive part of a solve. A gateway that fails during judging
+// must not erase it: the audit is written with the executed candidates, and the
+// missing verdict is reported rather than the run vanishing.
+func TestSolveSavesTheAuditWhenAJudgeCannotBeReached(t *testing.T) {
+	model := newScriptedLLM(map[string][]string{
+		"reference": {"reference"},
+		"candidate": {validResponse("works")},
+		"criteria":  {""},
+	})
+	model.fail = map[string]error{"criteria": errors.New("model endpoint: 500 Internal Server Error")}
+	store := artifact.Store{Root: t.TempDir()}
+	engine := Engine{Client: model, Offline: &passingOffline{}, Store: store}
+	got, err := engine.Solve(context.Background(), pythonProblem(), Options{Model: "m", Language: "python3", Candidates: 1, Force: true})
+	if err == nil || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("err = %v, want the endpoint failure reported", err)
+	}
+	if !strings.Contains(err.Error(), "saved") {
+		t.Errorf("err = %v, want the caller told the audit survived", err)
+	}
+	if got.Verified {
+		t.Error("an unjudged article was marked verified")
+	}
+	// The executed evidence is what must survive on disk.
+	saved, loadErr := store.Load(pythonProblem().Slug, "python3")
+	if loadErr != nil {
+		t.Fatalf("the audit was not saved: %v", loadErr)
+	}
+	if len(saved.Candidates) != 1 || !saved.Candidates[0].Offline.Passed {
+		t.Errorf("saved audit lost the executed candidate: %+v", saved.Candidates)
+	}
+	if !saved.Accepted || saved.Verified {
+		t.Errorf("saved accepted=%v verified=%v, want accepted and unverified", saved.Accepted, saved.Verified)
 	}
 }

@@ -224,14 +224,21 @@ func (e *Engine) Solve(ctx context.Context, p problem.Problem, options Options) 
 		current.Offline = offlineResult
 		result.Attempts = append(result.Attempts, artifact.Attempt{Phase: "repair", Number: repair + 1, Response: response, At: time.Now().UTC()})
 	}
+	// A judge that cannot be reached must not erase the run it was judging. By this
+	// point the candidates are generated and executed, and that evidence is the
+	// expensive part; returning before the store ran discarded all of it, so a
+	// gateway 500 during judging cost the whole run. The audit is written either
+	// way, and the verdict is simply absent, which is what Verified already means.
+	verifyErr := error(nil)
 	if result.Accepted {
-		if err := e.verify(ctx, p, options, reference, &result); err != nil {
-			return result, err
-		}
+		verifyErr = e.verify(ctx, p, options, reference, &result)
 	}
 	result.CompletedAt = time.Now().UTC()
 	if err := e.Store.Save(result); err != nil {
 		return result, err
+	}
+	if verifyErr != nil {
+		return result, fmt.Errorf("%w; the audit artifact was saved with the executed candidates", verifyErr)
 	}
 	if !result.Accepted {
 		return result, errors.New("solution was not accepted; unpublished audit artifact was saved")
