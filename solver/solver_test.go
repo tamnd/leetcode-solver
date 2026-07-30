@@ -323,3 +323,32 @@ func TestSolveSubmitsCachedCandidateWhenRequested(t *testing.T) {
 		t.Fatalf("got=%+v offline_calls=%d judge_calls=%d model_calls=%d", got, offlineRunner.calls, runner.calls, model.calls)
 	}
 }
+
+// A repair that answers off-contract is one bad response inside a bounded repair
+// budget. Failing the whole run on it throws away a candidate that may already be
+// the best available and, worse, loses the audit that explains the outcome.
+func TestSolveDiscardsAMalformedRepairInsteadOfFailingTheRun(t *testing.T) {
+	model := newScriptedLLM(map[string][]string{
+		"reference": {"reference"},
+		"candidate": {validResponse("broken")},
+		"repair":    {"an apology with no CODE block"},
+	})
+	engine := Engine{Client: model, Offline: &codeGatedOffline{passing: map[string]bool{}}, Store: artifact.Store{Root: t.TempDir()}}
+	got, err := engine.Solve(context.Background(), pythonProblem(), Options{Model: "m", Language: "python3", Candidates: 1, MaxRepairs: 1, Force: true})
+	if err == nil || !strings.Contains(err.Error(), "not accepted") {
+		t.Fatalf("err = %v, want the run reported as unaccepted rather than as a parse failure", err)
+	}
+	if got.Accepted {
+		t.Error("a candidate that never passed execution was accepted")
+	}
+	// The audit is the only place the malformed repair can still be read.
+	found := false
+	for _, attempt := range got.Attempts {
+		if attempt.Phase == "repair" && attempt.Error != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the malformed repair was not recorded in the audit")
+	}
+}

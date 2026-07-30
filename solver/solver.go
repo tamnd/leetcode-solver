@@ -207,7 +207,13 @@ func (e *Engine) Solve(ctx context.Context, p problem.Problem, options Options) 
 		}
 		code, explanation, err := textguard.Parse(response.Text)
 		if err != nil {
-			return result, fmt.Errorf("repair %d: %w", repair+1, err)
+			// A repair that answers off-contract is a failed repair, not a failed run.
+			// Discarding it keeps the best candidate the run actually has and saves the
+			// audit that says why nothing better arrived, which is what a malformed
+			// rewrite already does one stage later.
+			e.log("discarding a malformed repair: %v", err)
+			result.Attempts = append(result.Attempts, artifact.Attempt{Phase: "repair", Number: repair + 1, Response: response, Error: err.Error(), At: time.Now().UTC()})
+			break
 		}
 		current = artifact.Candidate{Number: current.Number, Code: code, Explanation: explanation, Response: response}
 		offlineResult, offlineErr := e.Offline.Verify(ctx, p.Slug, options.Language, code)
@@ -255,7 +261,7 @@ func (e *Engine) verify(ctx context.Context, p problem.Problem, options Options,
 				return e.Prompts.Criteria(p, options.Language, reference, result.Code, result.Explanation)
 			}},
 			{"falsification", func() (string, string) {
-				return e.Prompts.Falsify(p, options.Language, result.Code, result.Explanation)
+				return e.Prompts.Falsify(p, options.Language, result.Code, result.Explanation, result.Offline.AssertionsRun)
 			}},
 		}
 		for _, check := range checks {

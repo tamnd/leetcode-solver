@@ -110,7 +110,21 @@ Report every defect as: section, the exact claim, why it is wrong or unsupported
 
 // Falsify is the reference-blind adversarial judge. It never sees the reference, so a
 // mistake the reference itself contains cannot propagate into both verdicts at once.
-func (Builder) Falsify(p problem.Problem, language, code, article string) (string, string) {
+//
+// It is told how many official assertions the code already passed. Without that, a
+// judge that misreads the problem's rules invents a counterexample, declares the
+// code broken, and blocks a solution execution has already settled; observed in
+// practice against code that passed all 109 assertions of its official suite. The
+// evidence bounds only claims about what the code outputs. Every attack on the
+// article itself — complexity, proofs, worked examples — is untouched, which is
+// where this judge earns its keep.
+func (Builder) Falsify(p problem.Problem, language, code, article string, assertions int) (string, string) {
+	evidence := "This code has not been executed, so every claim about its output is yours to establish."
+	if assertions > 0 {
+		evidence = fmt.Sprintf("This code already passed all %d assertions of the problem's official test suite, executed offline. That result is authoritative and is not in question.\n"+
+			"You may still argue the code is wrong, but only by naming an input inside the stated constraints and deriving the expected answer from the problem statement alone, rule by rule, showing which rule your input exercises that %d assertions did not. If your derivation relies on an operation the statement does not grant, you have misread the statement, not found a defect.\n"+
+			"An article defect is a defect whatever the code does: a complexity claim that does not match the code, a proof gap, a worked example the code would not reproduce. Those need no counterexample and are the point of this pass.", assertions, assertions)
+	}
 	return "You are trying to falsify an article. Assume it is wrong and look for the proof. Do not consult or invent an authoritative solution; reason from the problem and the text in front of you.",
 		fmt.Sprintf(`<problem>%s</problem>
 <language>%s</language>
@@ -120,6 +134,9 @@ func (Builder) Falsify(p problem.Problem, language, code, article string) (strin
 <article>
 %s
 </article>
+<execution_evidence>
+%s
+</execution_evidence>
 
 Attack in this order and stop at the first defect you can demonstrate:
 1. Recompute every worked example independently, by hand, from the code. A trace that does not reproduce the article's stated answer is a defect.
@@ -128,7 +145,7 @@ Attack in this order and stop at the first defect you can demonstrate:
 4. Check the proof for a gap: an unproved step, a case the argument never covers, a converse assumed from an implication.
 5. Check the article against itself for a conclusion stated two different ways.
 
-An attack you cannot demonstrate is not a defect, and you must not report it. If every attack fails, say which ones you ran. On the final line return exactly VERDICT: PASS or VERDICT: FAIL.`, statement(p), language, code, article)
+An attack you cannot demonstrate is not a defect, and you must not report it. If every attack fails, say which ones you ran. On the final line return exactly VERDICT: PASS or VERDICT: FAIL.`, statement(p), language, code, article, evidence)
 }
 
 // Rewrite repairs an article without touching code that already passed execution.
