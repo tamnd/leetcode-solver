@@ -110,16 +110,17 @@ func line(source []rune, at int) string {
 // for a trailing expression. Quotes are tracked so a `#` inside a string survives.
 func stripComments(text string) string {
 	var out strings.Builder
-	for _, raw := range strings.Split(text, "\n") {
+	for raw := range strings.SplitSeq(text, "\n") {
 		source := []rune(raw)
 		quote := rune(0)
 		cut := len(source)
 		for i := 0; i < len(source); i++ {
 			switch {
 			case quote != 0:
-				if source[i] == '\\' {
+				switch source[i] {
+				case '\\':
 					i++
-				} else if source[i] == quote {
+				case quote:
 					quote = 0
 				}
 			case source[i] == '\'' || source[i] == '"':
@@ -146,9 +147,10 @@ func matchParen(source []rune, open int) (int, error) {
 		c := source[i]
 		switch {
 		case quote != 0:
-			if c == '\\' {
+			switch c {
+			case '\\':
 				i++
-			} else if c == quote {
+			case quote:
 				quote = 0
 			}
 		case c == '\'' || c == '"':
@@ -190,9 +192,10 @@ func splitKeyword(part string) (name, expression string) {
 		c := source[i]
 		switch {
 		case quote != 0:
-			if c == '\\' {
+			switch c {
+			case '\\':
 				i++
-			} else if c == quote {
+			case quote:
 				quote = 0
 			}
 		case c == '\'' || c == '"':
@@ -239,9 +242,10 @@ func splitTopLevel(text string) []string {
 		c := source[i]
 		switch {
 		case quote != 0:
-			if c == '\\' {
+			switch c {
+			case '\\':
 				i++
-			} else if c == quote {
+			case quote:
 				quote = 0
 			}
 		case c == '\'' || c == '"':
