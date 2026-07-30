@@ -36,7 +36,7 @@ make check build
 
 ## Configure
 
-A run reaches a model in one of two ways. `--provider api`, the default, calls any endpoint that implements the OpenAI Responses API with a key. `--provider codex` spends an existing ChatGPT subscription through the Codex CLI's own credential, needs no key, and is described below.
+A run reaches a model in one of three ways. `--provider api`, the default, calls any endpoint that implements the OpenAI Responses API with a key. `--provider chat` calls `/v1/chat/completions` instead, which is all that most compatible gateways implement. `--provider codex` spends an existing ChatGPT subscription through the Codex CLI's own credential, needs no key, and is described below.
 
 ```sh
 export LEETCODE_SOLVER_BASE_URL=https://api.openai.com/v1
@@ -51,7 +51,7 @@ Problem discovery and statement retrieval require no API key or LeetCode login. 
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LEETCODE_SOLVER_PROVIDER` | `api` | `api` for a keyed endpoint, `codex` for a local ChatGPT subscription |
+| `LEETCODE_SOLVER_PROVIDER` | `api` | `api` for a Responses endpoint, `chat` for a chat-completions gateway, `codex` for a local ChatGPT subscription |
 | `LEETCODE_SOLVER_BASE_URL` | `https://api.openai.com/v1` | Model API base URL |
 | `LEETCODE_SOLVER_API_KEY` | `OPENAI_API_KEY` | Model credential |
 | `LEETCODE_SOLVER_MODEL` | `gpt-5.4`, or `gpt-5.6-luna` under `codex` | Generation and review model |
@@ -64,6 +64,20 @@ Problem discovery and statement retrieval require no API key or LeetCode login. 
 | `LEETCODE_SOLVER_CANDIDATES` | `3` | Independent candidates, from 1 to 5 |
 | `LEETCODE_SOLVER_MAX_REPAIRS` | `2` | Execution-guided repair attempts |
 | `LEETCODE_SOLVER_MAX_CORRECTIONS` | `1` | Judge-guided article rewrites, code held fixed |
+
+### Solve through a chat-completions gateway
+
+Many aggregators publish only `/v1/chat/completions` and answer a Responses request with an upstream error, so the default provider cannot reach them at all. `--provider chat` speaks that endpoint instead:
+
+```sh
+export LEETCODE_SOLVER_API_KEY=$OPENCODE_API_KEY
+leetcode-solver solve --provider chat --base-url https://opencode.ai/zen/v1 \
+  --model deepseek-v4-flash-free --language python3 two-sum
+```
+
+Standing rules go in the system message and the prompt in the user message, so the contract every prompt here relies on is still separately addressed. Usage is read under the chat names, including each gateway's own cache fields, so a run stays costable. A rate-limited or briefly failing gateway is retried, honoring `Retry-After`, while a rejection that cannot change — an unknown model, a bad key — is returned at once. A response cut off by the output cap is reported as truncation rather than as the missing article section it would otherwise look like.
+
+Weaker models answer off-contract often enough that a single bad draw must not decide a run: a candidate that refuses the response contract is recorded in the audit with its reason and skipped, and only an empty candidate population fails the solve.
 
 ### Solve with a ChatGPT subscription
 
