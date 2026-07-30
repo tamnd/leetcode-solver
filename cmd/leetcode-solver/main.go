@@ -181,7 +181,8 @@ func flags(name string) (*flag.FlagSet, *config.Config, *bool) {
 	fs.StringVar(&cfg.EvalRoot, "eval-root", cfg.EvalRoot, "offline evaluation bundle root")
 	fs.StringVar(&cfg.ContainerRuntime, "container-runtime", cfg.ContainerRuntime, "docker, podman, or auto")
 	fs.IntVar(&cfg.Candidates, "candidates", cfg.Candidates, "independent candidates, 1-5")
-	fs.IntVar(&cfg.MaxRepairs, "max-repairs", cfg.MaxRepairs, "judge-guided repair attempts")
+	fs.IntVar(&cfg.MaxRepairs, "max-repairs", cfg.MaxRepairs, "execution-guided code repair attempts")
+	fs.IntVar(&cfg.MaxCorrections, "max-corrections", cfg.MaxCorrections, "article rewrites after a quality judge rejects it")
 	return fs, &cfg, force
 }
 func engine(cfg config.Config) *solver.Engine {
@@ -397,11 +398,14 @@ func solve(ctx context.Context, args []string) error {
 	}
 	var results []artifact.Result
 	for _, language := range languages {
-		result, solveErr := engine(*cfg).Solve(ctx, p, solver.Options{Model: cfg.Model, Language: language, Candidates: cfg.Candidates, MaxRepairs: cfg.MaxRepairs, Force: *force, Submit: cfg.Session != "" && cfg.CSRFToken != ""})
+		result, solveErr := engine(*cfg).Solve(ctx, p, solver.Options{Model: cfg.Model, Language: language, Candidates: cfg.Candidates, MaxRepairs: cfg.MaxRepairs, MaxCorrections: cfg.MaxCorrections, Force: *force, Submit: cfg.Session != "" && cfg.CSRFToken != ""})
 		if solveErr != nil {
 			return fmt.Errorf("%s: %w", language, solveErr)
 		}
-		fmt.Printf("accepted offline: %s (%d), %s, %d tests", p.Title, pID(p.FrontendID), language, result.Offline.TestCount)
+		// The executed assertion count is the honest number: it is what the harness
+		// reported running, not what the bundle declared it would run.
+		fmt.Printf("accepted offline: %s (%d), %s, %d assertions executed of %d declared, article verified by %d judges",
+			p.Title, pID(p.FrontendID), language, result.Offline.AssertionsRun, result.Offline.TestCount, len(result.Quality))
 		if result.SubmissionID > 0 {
 			fmt.Printf(", submission %d", result.SubmissionID)
 		}
@@ -484,7 +488,7 @@ func batch(ctx context.Context, args []string) error {
 						var results []artifact.Result
 						for _, language := range languages {
 							var solved artifact.Result
-							solved, err = engine(*cfg).Solve(ctx, p, solver.Options{Model: cfg.Model, Language: language, Candidates: cfg.Candidates, MaxRepairs: cfg.MaxRepairs, Force: *force, Submit: cfg.Session != "" && cfg.CSRFToken != ""})
+							solved, err = engine(*cfg).Solve(ctx, p, solver.Options{Model: cfg.Model, Language: language, Candidates: cfg.Candidates, MaxRepairs: cfg.MaxRepairs, MaxCorrections: cfg.MaxCorrections, Force: *force, Submit: cfg.Session != "" && cfg.CSRFToken != ""})
 							if err != nil {
 								break
 							}

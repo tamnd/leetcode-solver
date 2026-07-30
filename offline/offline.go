@@ -10,9 +10,27 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// SchemaVersion is the only bundle schema this runner executes. Version 2 added
+// the mandatory completion marker described by PassMarker.
+const SchemaVersion = 2
+
+// PassMarker is the token a bundle harness prints on its own line after the last
+// assertion has run. A zero exit status alone is not evidence of correctness: a
+// candidate that raises SystemExit while it is being imported, or a harness whose
+// assertions were never reached, both exit zero. The runner therefore requires
+// the marker and the executed assertion count it carries.
+const PassMarker = "LEETCODE_SOLVER_PASS"
+
+// Leading whitespace is tolerated because `go test -v` indents whatever a test
+// writes while a subtest is running; the marker still has to own its line, so a
+// candidate cannot smuggle it into the tail of another sentence.
+var passLine = regexp.MustCompile(`(?m)^[ \t]*` + PassMarker + ` assertions=([0-9]+)[ \t]*\r?$`)
 
 type Manifest struct {
 	SchemaVersion   int      `json:"schema_version"`
@@ -30,14 +48,17 @@ type Manifest struct {
 	TimeoutSeconds  int      `json:"timeout_seconds"`
 }
 type Result struct {
-	Passed    bool          `json:"passed"`
-	TestCount int           `json:"test_count"`
-	Dataset   string        `json:"dataset"`
-	Revision  string        `json:"revision"`
-	Image     string        `json:"image"`
-	Command   []string      `json:"command"`
-	Output    string        `json:"output"`
-	Elapsed   time.Duration `json:"elapsed"`
+	Passed bool `json:"passed"`
+	// TestCount is the count the bundle declares. AssertionsRun is the count the
+	// harness reported actually executing, which is the honest number to publish.
+	TestCount     int           `json:"test_count"`
+	AssertionsRun int           `json:"assertions_run"`
+	Dataset       string        `json:"dataset"`
+	Revision      string        `json:"revision"`
+	Image         string        `json:"image"`
+	Command       []string      `json:"command"`
+	Output        string        `json:"output"`
+	Elapsed       time.Duration `json:"elapsed"`
 }
 type Runner struct {
 	Root, DockerBinary string
@@ -113,7 +134,8 @@ func (r Runner) Verify(ctx context.Context, slug, language, code string) (Result
 	if len(output) > limit {
 		output = output[len(output)-limit:]
 	}
-	result := Result{Passed: runErr == nil, TestCount: manifest.TestCount, Dataset: manifest.Dataset, Revision: manifest.Revision, Image: manifest.Image, Command: manifest.Command, Output: string(output), Elapsed: time.Since(started).Round(time.Millisecond)}
+	assertions, marked := completion(output)
+	result := Result{Passed: runErr == nil && marked, TestCount: manifest.TestCount, AssertionsRun: assertions, Dataset: manifest.Dataset, Revision: manifest.Revision, Image: manifest.Image, Command: manifest.Command, Output: string(output), Elapsed: time.Since(started).Round(time.Millisecond)}
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		result.Passed = false
 		return result, fmt.Errorf("offline eval timed out after %ds", timeout)
@@ -121,7 +143,29 @@ func (r Runner) Verify(ctx context.Context, slug, language, code string) (Result
 	if runErr != nil {
 		return result, fmt.Errorf("offline eval failed: %w\n%s", runErr, strings.TrimSpace(result.Output))
 	}
+	if !marked {
+		result.Passed = false
+		return result, fmt.Errorf("offline eval exited zero without printing %q, so no assertion is known to have run:\n%s", PassMarker, strings.TrimSpace(result.Output))
+	}
+	if assertions < manifest.TestCount {
+		result.Passed = false
+		return result, fmt.Errorf("offline eval ran %d of the %d assertions the bundle declares, so this bundle cannot establish correctness", assertions, manifest.TestCount)
+	}
 	return result, nil
+}
+
+// completion reports the executed assertion count a harness published. The runner
+// keeps the trailing bytes of a truncated log precisely so this final line survives.
+func completion(output []byte) (int, bool) {
+	match := passLine.FindAllSubmatch(output, -1)
+	if len(match) == 0 {
+		return 0, false
+	}
+	count, err := strconv.Atoi(string(match[len(match)-1][1]))
+	if err != nil {
+		return 0, false
+	}
+	return count, true
 }
 
 func containerArgs(work string, manifest Manifest) []string {
@@ -135,8 +179,8 @@ func containerArgs(work string, manifest Manifest) []string {
 }
 
 func validate(m Manifest, slug, language string) error {
-	if m.SchemaVersion != 1 {
-		return fmt.Errorf("unsupported eval schema %d", m.SchemaVersion)
+	if m.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("unsupported eval schema %d, want %d; regenerate the bundle with eval-sync", m.SchemaVersion, SchemaVersion)
 	}
 	if m.ProblemSlug != slug || m.Language != language {
 		return fmt.Errorf("eval identity mismatch: got %s/%s, want %s/%s", m.ProblemSlug, m.Language, slug, language)
@@ -157,6 +201,9 @@ func validate(m Manifest, slug, language string) error {
 	}
 	if m.TestCount < 1 {
 		return errors.New("eval manifest must declare at least one test")
+	}
+	if m.Command[0] == "go" && slices.Contains(m.Command, "test") && !slices.Contains(m.Command, "-v") {
+		return errors.New("a `go test` command must pass -v: cmd/go discards a passing package's stdout, which would hide the completion marker and fail every correct candidate")
 	}
 	return nil
 }

@@ -82,6 +82,73 @@ func (Builder) Select(p problem.Problem, reference string, candidates []artifact
 Check every obligation, simulate adversarial cases, and compare asymptotic bounds. On the final line return exactly SELECTED: N.`, statement(p), reference, b.String())
 }
 
+// Criteria is the reference-grounded quality judge. It reads the private reference
+// as a fallible aid and decides whether the article actually establishes what it claims.
+func (Builder) Criteria(p problem.Problem, language, reference, code, article string) (string, string) {
+	return "You verify a published article against a problem and a fallible private reference. Decide, do not rewrite. Withhold a pass when a required obligation is merely asserted.",
+		fmt.Sprintf(`<problem>%s</problem>
+<language>%s</language>
+<private_reference>%s</private_reference>
+<accepted_code>
+%s
+</accepted_code>
+<article>
+%s
+</article>
+
+The code already passed an executed test suite, so do not re-argue its acceptance. Judge the article on obligations a reader depends on:
+1. The stated approach is the approach the code implements.
+2. The central invariant is proved, not asserted, and termination is argued where a loop or recursion is unbounded by construction.
+3. The stated time and space complexity match the code, including the cost of every container operation and any recursion depth.
+4. The baseline and the optimal approach are both explained, and the comparison says why the optimal one wins.
+5. Each worked example is traced to the answer the code would actually produce.
+6. The edge cases named are the ones this problem really has, and the article says how the code survives each.
+7. Nothing is claimed that the code does not do.
+
+Report every defect as: section, the exact claim, why it is wrong or unsupported, and the smallest correction. Judge the earliest defect first. On the final line return exactly VERDICT: PASS or VERDICT: FAIL.`, statement(p), language, reference, code, article)
+}
+
+// Falsify is the reference-blind adversarial judge. It never sees the reference, so a
+// mistake the reference itself contains cannot propagate into both verdicts at once.
+func (Builder) Falsify(p problem.Problem, language, code, article string) (string, string) {
+	return "You are trying to falsify an article. Assume it is wrong and look for the proof. Do not consult or invent an authoritative solution; reason from the problem and the text in front of you.",
+		fmt.Sprintf(`<problem>%s</problem>
+<language>%s</language>
+<code>
+%s
+</code>
+<article>
+%s
+</article>
+
+Attack in this order and stop at the first defect you can demonstrate:
+1. Recompute every worked example independently, by hand, from the code. A trace that does not reproduce the article's stated answer is a defect.
+2. Recompute the complexity from the code and compare it with the claim. A claim that omits a hidden linear cost, a copy inside a loop, or recursion depth is a defect.
+3. Look for an input inside the stated constraints that breaks a claim the article makes about the code. Give the input and the divergence.
+4. Check the proof for a gap: an unproved step, a case the argument never covers, a converse assumed from an implication.
+5. Check the article against itself for a conclusion stated two different ways.
+
+An attack you cannot demonstrate is not a defect, and you must not report it. If every attack fails, say which ones you ran. On the final line return exactly VERDICT: PASS or VERDICT: FAIL.`, statement(p), language, code, article)
+}
+
+// Rewrite repairs an article without touching code that already passed execution.
+func (Builder) Rewrite(p problem.Problem, language, code, article string, reports []string) (string, string) {
+	return solverInstructions, fmt.Sprintf(`<problem>%s</problem>
+<language>%s</language>
+<accepted_code>
+%s
+</accepted_code>
+<article>
+%s
+</article>
+<defects>
+%s
+</defects>
+
+The code is already verified by execution and must not change. Return the identical <CODE> byte for byte, and a rewritten <SOLUTION> that repairs every defect above and keeps the required article structure. Repair the earliest defect first, do not delete a section to make a defect disappear, and do not add a claim the code does not support.`,
+		statement(p), language, code, article, strings.Join(reports, "\n\n"))
+}
+
 func (Builder) Repair(p problem.Problem, snippet problem.CodeSnippet, reference string, current artifact.Candidate, failure judge.Result) (string, string) {
 	return solverInstructions, fmt.Sprintf(`<problem>%s</problem>
 <starter_code>%s</starter_code>

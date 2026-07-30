@@ -1,8 +1,13 @@
 package main
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestTwoSum(t *testing.T) {
+	ran := 0
+	defer func() { fmt.Printf("LEETCODE_SOLVER_PASS assertions=%d\n", ran) }()
 	cases := []struct {
 		nums   []int
 		target int
@@ -23,5 +28,6 @@ func TestTwoSum(t *testing.T) {
 		if !((got[0] == tc.a && got[1] == tc.b) || (got[0] == tc.b && got[1] == tc.a)) {
 			t.Fatalf("indices=%v", got)
 		}
+		ran++
 	}
 }

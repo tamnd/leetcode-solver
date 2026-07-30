@@ -55,11 +55,10 @@ func ImportLeetCodeDataset(ctx context.Context, r io.Reader, root, image, revisi
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return report, err
 		}
-		harness := "with open(\"solution.py\", \"rb\") as candidate_file:\n    exec(compile(candidate_file.read(), \"solution.py\", \"exec\"), globals())\n\n" + row.Test + "\n\ncheck(" + row.EntryPoint + ")\nprint(\"PASS " + fmt.Sprint(tests) + " tests\")\n"
-		if err := os.WriteFile(filepath.Join(dir, "test_solution.py"), []byte(harness), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, "test_solution.py"), []byte(pythonHarness(row)), 0o600); err != nil {
 			return report, err
 		}
-		manifest := offline.Manifest{SchemaVersion: 1, ProblemSlug: row.TaskID, Language: "python3", Dataset: "newfacade/LeetCodeDataset", Revision: revision, Image: image, CandidateFile: "solution.py", CandidatePrefix: row.Prompt + "\n", Command: []string{"python3", "-I", "test_solution.py"}, Files: []string{"test_solution.py"}, TestCount: tests, TimeoutSeconds: 60}
+		manifest := offline.Manifest{SchemaVersion: offline.SchemaVersion, ProblemSlug: row.TaskID, Language: "python3", Dataset: "newfacade/LeetCodeDataset", Revision: revision, Image: image, CandidateFile: "solution.py", CandidatePrefix: row.Prompt + "\n", Command: []string{"python3", "-I", "test_solution.py"}, Files: []string{"test_solution.py"}, TestCount: tests, TimeoutSeconds: 60}
 		data, _ := json.MarshalIndent(manifest, "", "  ")
 		data = append(data, '\n')
 		if err := os.WriteFile(filepath.Join(dir, "manifest.json"), data, 0o600); err != nil {
@@ -69,4 +68,47 @@ func ImportLeetCodeDataset(ctx context.Context, r io.Reader, root, image, revisi
 		report.Tests += tests
 	}
 	return report, scanner.Err()
+}
+
+// pythonHarness wraps the dataset's own check function. Two properties matter more
+// than brevity here. The candidate is imported inside a SystemExit guard, because
+// a top-level exit would otherwise end the process with status zero before a single
+// assertion ran. The entry point is then wrapped in a counter, so the harness can
+// publish how many assertions it truly executed instead of how many the importer
+// counted in the source text.
+func pythonHarness(row LeetCodeRow) string {
+	return `import sys
+
+_calls = 0
+
+
+class _CountedCandidate:
+    def __init__(self, target):
+        self._target = target
+
+    def __call__(self, *args, **kwargs):
+        global _calls
+        _calls += 1
+        return self._target(*args, **kwargs)
+
+
+def _load_candidate():
+    with open("solution.py", "rb") as candidate_file:
+        source = candidate_file.read()
+    try:
+        exec(compile(source, "solution.py", "exec"), globals())
+    except SystemExit as request:
+        raise AssertionError("candidate exited while being imported: %r" % (request,))
+
+
+_load_candidate()
+
+` + row.Test + `
+
+check(_CountedCandidate(` + row.EntryPoint + `))
+if _calls < 1:
+    raise AssertionError("the dataset check ran no assertion against the candidate")
+print("` + offline.PassMarker + ` assertions=%d" % _calls)
+sys.stdout.flush()
+`
 }

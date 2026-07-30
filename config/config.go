@@ -9,11 +9,11 @@ import (
 
 type Config struct {
 	BaseURL, APIKey, Model, Language, LeetCodeURL, Session, CSRFToken, Output, Database, EvalRoot, CompleteCache, ContainerRuntime string
-	Candidates, MaxRepairs                                                                                                         int
+	Candidates, MaxRepairs, MaxCorrections                                                                                         int
 }
 
 func Load() Config {
-	return Config{BaseURL: get("LEETCODE_SOLVER_BASE_URL", "https://api.openai.com/v1"), APIKey: first(os.Getenv("LEETCODE_SOLVER_API_KEY"), os.Getenv("OPENAI_API_KEY")), Model: get("LEETCODE_SOLVER_MODEL", "gpt-5.4"), Language: get("LEETCODE_SOLVER_LANGUAGE", "auto"), LeetCodeURL: get("LEETCODE_SOLVER_LEETCODE_URL", "https://leetcode.com"), Session: os.Getenv("LEETCODE_SESSION"), CSRFToken: os.Getenv("LEETCODE_CSRF_TOKEN"), Output: expand(get("LEETCODE_SOLVER_OUTPUT", "~/data/leetcode-solver")), Database: expand(get("LEETCODE_SOLVER_DATABASE", "~/data/leetcode/leetcode.sqlite")), EvalRoot: expand(get("LEETCODE_SOLVER_EVAL_ROOT", "~/data/leetcode-evals")), CompleteCache: expand(get("LEETCODE_SOLVER_COMPLETE_CACHE", "~/data/leetcode-complete")), ContainerRuntime: get("LEETCODE_SOLVER_CONTAINER_RUNTIME", "auto"), Candidates: getInt("LEETCODE_SOLVER_CANDIDATES", 3), MaxRepairs: getInt("LEETCODE_SOLVER_MAX_REPAIRS", 2)}
+	return Config{BaseURL: get("LEETCODE_SOLVER_BASE_URL", "https://api.openai.com/v1"), APIKey: first(os.Getenv("LEETCODE_SOLVER_API_KEY"), os.Getenv("OPENAI_API_KEY")), Model: get("LEETCODE_SOLVER_MODEL", "gpt-5.4"), Language: get("LEETCODE_SOLVER_LANGUAGE", "auto"), LeetCodeURL: get("LEETCODE_SOLVER_LEETCODE_URL", "https://leetcode.com"), Session: os.Getenv("LEETCODE_SESSION"), CSRFToken: os.Getenv("LEETCODE_CSRF_TOKEN"), Output: expand(get("LEETCODE_SOLVER_OUTPUT", "~/data/leetcode-solver")), Database: expand(get("LEETCODE_SOLVER_DATABASE", "~/data/leetcode/leetcode.sqlite")), EvalRoot: expand(get("LEETCODE_SOLVER_EVAL_ROOT", "~/data/leetcode-evals")), CompleteCache: expand(get("LEETCODE_SOLVER_COMPLETE_CACHE", "~/data/leetcode-complete")), ContainerRuntime: get("LEETCODE_SOLVER_CONTAINER_RUNTIME", "auto"), Candidates: getInt("LEETCODE_SOLVER_CANDIDATES", 3), MaxRepairs: getInt("LEETCODE_SOLVER_MAX_REPAIRS", 2), MaxCorrections: getInt("LEETCODE_SOLVER_MAX_CORRECTIONS", 1)}
 }
 func get(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {

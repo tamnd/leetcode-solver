@@ -12,7 +12,13 @@ var codeBlock = regexp.MustCompile(`(?s)<CODE>\s*(.*?)\s*</CODE>`)
 var solutionBlock = regexp.MustCompile(`(?s)<SOLUTION>\s*(.*?)\s*</SOLUTION>`)
 var fencedCode = regexp.MustCompile("(?s)```[^\\n]*\\n(.*?)\\n```")
 var selected = regexp.MustCompile(`(?m)^SELECTED:\s*([1-5])\s*$`)
-var providerLeak = regexp.MustCompile(`(?i)\b(chatgpt|openai|claude|gemini|language model|the prompt|the candidate|the judge)\b`)
+var verdict = regexp.MustCompile(`(?mi)^\s*\**VERDICT:\**\s*\**(PASS|FAIL)\**\s*\.?\s*$`)
+
+// providerLeak matches the vocabulary of the generation pipeline itself. It must not
+// match ordinary algorithmic prose: "the candidate" is the standard name for the
+// running answer in Boyer-Moore majority voting, and "the judge" appears in problem
+// statements, so both are matched only where they name this pipeline's own machinery.
+var providerLeak = regexp.MustCompile(`(?i)(\bchatgpt\b|\bopenai\b|\banthropic\b|\bclaude\b|\bgemini\b|\bcopilot\b|\bas an ai\b|\blanguage model\b|\bsystem prompt\b|\bthis prompt\b|\bthe prompt (?:above|below|says|asks|instructs)\b|\bcandidate #?[1-5]\b|\bprivate reference\b|\bthe selector\b|\b(?:truth|audit|reference) judge\b)`)
 var required = []string{"## Problem Understanding", "## Approaches", "## Approach Comparison", "## Algorithm Walkthrough", "### Why it works", "## Worked Examples", "## Complexity Analysis", "## Test Cases", "## Edge Cases"}
 
 func Parse(text string) (code, solution string, err error) {
@@ -62,6 +68,23 @@ func Clean(text string) string {
 	text = regexp.MustCompile(`(?m)^\s*---+\s*$`).ReplaceAllString(text, "")
 	return strings.TrimSpace(text)
 }
+
+// Verdict reads a judge's decision. A response with no decision field, or with both
+// decisions present, is a failure: an unstated verdict is not a pass.
+func Verdict(text string) (bool, error) {
+	matches := verdict.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return false, errors.New("judge returned no VERDICT line")
+	}
+	decision := strings.EqualFold(matches[len(matches)-1][1], "PASS")
+	for _, match := range matches {
+		if strings.EqualFold(match[1], "PASS") != decision {
+			return false, errors.New("judge returned conflicting VERDICT lines")
+		}
+	}
+	return decision, nil
+}
+
 func Selected(text string) int {
 	m := selected.FindStringSubmatch(text)
 	if len(m) != 2 {
