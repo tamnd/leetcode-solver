@@ -7,8 +7,10 @@ live catalog -> problem snapshot -> private reference
                                                             -> offline Python/Go suites
                                                             -> optional hidden submission
                                                             -> bounded repair
+                                                            -> dual-judge article gate
+                                                            -> bounded correction, code held fixed
                                                             -> JSON audit
-                                                            -> Markdown, only if Accepted
+                                                            -> Markdown, only if accepted and verified
 ```
 
 ## Trust boundaries
@@ -29,6 +31,14 @@ Independent candidates make correlated implementation mistakes less likely and a
 
 Directly running generated programs on a developer machine is unsafe. The solver executes pinned Python and Go bundles in networkless, read-only, resource-limited containers. Optional official submission remains available as independent online evidence.
 
+Isolation alone does not make the container's report trustworthy. Candidate code shares a process with the harness, so the harness must prove what it did: it prints a completion marker carrying a nonce the runner substituted into it moments earlier, along with the number of assertions it executed against the candidate, and the runner believes a pass only when both check out. Candidates that could end the process early, or that contain the marker themselves, never reach the container. See [EVAL_BUNDLES.md](EVAL_BUNDLES.md) for the protocol and its documented residual limit.
+
+## Why two judges
+
+Execution decides whether the code is correct; nothing else can. But an article can be structurally complete, leak-free, and still wrong: an invariant asserted rather than proved, a complexity claim the code contradicts, a worked example that does not trace what the code would produce. One judge sees the private reference and checks those obligations by name. A second never sees the reference and tries to falsify the prose, ordered from the most likely defect to the least, and may report only what it can demonstrate — an attack it cannot show is not a defect. Requiring both to state an explicit verdict, and treating an unstated verdict as a failure, keeps a silent or evasive response from reading as approval. Neither judge can make incorrect code publishable; they can only withhold publication from correct code whose explanation does not earn it.
+
+Corrections rewrite prose only. The code is already proved by execution, so the rewrite prompt requires it back byte for byte, and a rewrite that changed it is re-executed and discarded if it no longer passes.
+
 ## Artifact lifecycle
 
-Each solve first writes a JSON audit. An unaccepted solve has no Markdown output. Once Accepted, the store writes the JSON and article through temporary files followed by atomic rename. A cached candidate must pass the current offline bundle again before reuse; when online submission is requested, it must also retain or obtain a LeetCode Accepted result.
+Each solve first writes a JSON audit. A solve that fails execution, and a solve whose code passed but whose article failed a judge, both leave a JSON record and no Markdown. Once accepted and verified, the store writes the JSON and article through temporary files followed by atomic rename. A cached candidate must pass the current offline bundle again before reuse and must itself be both accepted and verified, so an unverified record is retried rather than promoted; when online submission is requested, it must also retain or obtain a LeetCode Accepted result.

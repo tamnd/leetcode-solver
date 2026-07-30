@@ -12,13 +12,14 @@ The solver combines the strongest ideas from `taocp-solver` and the older `chatg
 1. Load the statement, metadata, examples, topics, and starter code from a local SQLite or DuckDB snapshot.
 2. Build a candidate-blind private reference with obligations and adversarial tests.
 3. Generate three independently guided candidates by default.
-4. Execute every candidate against its complete, versioned offline suite in a locked-down container.
-5. Select by correctness obligations, counterexample resistance, and complexity.
+4. Execute every candidate against its complete, versioned offline suite in a locked-down container, and believe a pass only when the harness proves how many assertions it truly ran.
+5. Select by correctness obligations, counterexample resistance, and complexity, choosing only from candidates that actually passed execution.
 6. Optionally submit the selected code to LeetCode's hidden-test judge when session credentials are present.
 7. Feed offline and optional online compile, runtime, wrong-answer, and failing-case evidence into a bounded repair loop.
-8. Atomically save the complete JSON audit. Publish Markdown only when the final status is Accepted.
+8. Put the article through two independent judges — one grounded in the private reference, one reference-blind and trying to falsify it — and correct the prose, never the verified code, while corrections remain.
+9. Atomically save the complete JSON audit. Publish Markdown only when execution accepted the code and both judges verified the article.
 
-LLM review helps choose and repair candidates. It never replaces execution.
+LLM review helps choose and repair candidates, and decides only whether the prose is worth publishing. It never establishes correctness.
 
 ## Install
 
@@ -54,7 +55,7 @@ Problem discovery and statement retrieval require no API key or LeetCode login. 
 | `LEETCODE_SOLVER_BASE_URL` | `https://api.openai.com/v1` | Model API base URL |
 | `LEETCODE_SOLVER_API_KEY` | `OPENAI_API_KEY` | Model credential |
 | `LEETCODE_SOLVER_MODEL` | `gpt-5.4` | Generation and review model |
-| `LEETCODE_SOLVER_LANGUAGE` | `auto` | Generates both Python and Go when both starters exist |
+| `LEETCODE_SOLVER_LANGUAGE` | `auto` | Solves every language that has both starter code and an offline bundle |
 | `LEETCODE_SOLVER_DATABASE` | `~/data/leetcode/leetcode.sqlite` | CGO-free local problem snapshot |
 | `LEETCODE_SOLVER_EVAL_ROOT` | `~/data/leetcode-evals` | Versioned offline test bundles |
 | `LEETCODE_SOLVER_COMPLETE_CACHE` | `~/data/leetcode-complete` | Checksum-verified raw `leetcode-complete` snapshot |
@@ -62,6 +63,7 @@ Problem discovery and statement retrieval require no API key or LeetCode login. 
 | `LEETCODE_SOLVER_OUTPUT` | `~/data/leetcode-solver` | Audit and article directory |
 | `LEETCODE_SOLVER_CANDIDATES` | `3` | Independent candidates, from 1 to 5 |
 | `LEETCODE_SOLVER_MAX_REPAIRS` | `2` | Execution-guided repair attempts |
+| `LEETCODE_SOLVER_MAX_CORRECTIONS` | `1` | Judge-guided article rewrites, code held fixed |
 
 ## Solve
 
@@ -73,14 +75,16 @@ leetcode-solver solve two-sum
 leetcode-solver solve --language golang --candidates 5 regular-expression-matching
 ```
 
-On success the command prints the verified test count, optional online submission ID, and Markdown path. A solve produces:
+On success the command prints how many assertions the harness executed against how many the bundle declares, how many judges verified the article, the optional online submission ID, and the Markdown path. A solve produces:
 
 ```text
 ~/data/leetcode-solver/two-sum/python3.json
 ~/data/leetcode-solver/two-sum/python3.md
 ```
 
-The JSON record retains every model response, offline suite revision and test count, optional hidden-test result, repair, timestamp, and exact final code. Failed attempts retain JSON evidence but never create or overwrite a publishable Markdown article. When Python and Go both pass, `solution.md` combines both exact implementations in the detailed `brain` article format.
+The JSON record retains every model response, offline suite revision, declared and executed test counts, each judge's verdict, optional hidden-test result, repair, timestamp, and exact final code. Code that passes execution but whose article fails a judge is saved as an unpublished audit artifact: the JSON exists, the Markdown does not, and a later run will not promote it from cache. When Python and Go both pass and both articles are verified, `solution.md` combines both exact implementations in the detailed `brain` article format.
+
+A language with starter code but no offline bundle is reported on stderr and skipped rather than failing the languages that do have one, because an article for it could not be proved correct. `coverage` still counts it as owed, so the gap stays visible.
 
 ### Fully offline problem and reference snapshot
 
@@ -112,11 +116,13 @@ Run the resumable coverage loop over every free problem:
 leetcode-solver batch --parallel 1
 ```
 
-Add `--include-paid` when the local snapshot contains paid statements. Accepted artifacts are cached, so interrupted runs resume without spending calls on completed work. `--language auto` requires both Python and Go for ordinary algorithm problems and chooses the available platform language for specialized SQL or shell tasks. The batch exits nonzero if even one selected implementation is missing or unaccepted.
+Add `--include-paid` when the local snapshot contains paid statements. Accepted and verified artifacts are cached, so interrupted runs resume without spending calls on completed work; unverified ones are retried. `--language auto` owes both Python and Go for ordinary algorithm problems, and chooses the available platform language for specialized SQL or shell tasks. The batch exits nonzero if even one selected implementation is missing or unaccepted.
 
 ## Writing contract
 
 Every published article includes problem understanding, baseline and optimal approaches, an approach comparison, a stepwise algorithm, a correctness argument, exact accepted code, worked examples, complexity analysis, concrete test cases, and edge cases. Publication guards reject missing sections, empty code, process leakage, and malformed response boundaries.
+
+Structure is necessary but not sufficient. Two judges read every accepted article. The first sees the private reference and checks named obligations: that the central invariant is proved rather than asserted, that the stated complexity matches the code, and that each worked example traces what the code would actually produce. The second never sees the reference and tries to falsify the prose in a fixed order, and may report only a defect it can demonstrate. Both must return an explicit `VERDICT:`; a response that states no verdict is a failure, not a pass. While corrections remain, a rewrite fixes the prose with the verified code held byte-identical, and a rewrite that changed the code is re-executed and discarded if it no longer passes.
 
 The code fence in the article and the executed candidate body come from the same parsed response. A bundle may add only recorded platform scaffolding, such as Go's `package main`. The code readers see is therefore the code the suite verifies.
 
@@ -132,7 +138,7 @@ The `eval` command consumes execution results as JSON Lines and computes the unb
 leetcode-solver eval --input results.jsonl
 ```
 
-The benchmark design and recommended suites are documented in [docs/EVALUATION.md](docs/EVALUATION.md), and the executable format is in [docs/EVAL_BUNDLES.md](docs/EVAL_BUNDLES.md). `eval-sync` imports the pinned LeetCodeDataset Python suites entirely through Go tooling. The verified revision reads 2,869 rows and produces 2,835 runnable bundles with 274,914 assertions while reporting 34 unusable rows as gaps. The primary longitudinal regression suite is recent LiveCodeBench; EvalPlus, BigCodeBench, CodeContests, ICPC-Eval, MultiPL-E, and TestEval probe complementary correctness, performance, repair, language, and test-generation failures.
+The benchmark design and recommended suites are documented in [docs/EVALUATION.md](docs/EVALUATION.md), and the executable format is in [docs/EVAL_BUNDLES.md](docs/EVAL_BUNDLES.md). `eval-sync` imports the pinned LeetCodeDataset suites entirely through Go tooling. The verified revision reads 2,869 rows and produces 2,835 runnable Python bundles with 274,914 assertions while reporting 34 unusable rows as gaps. Go bundles are derived from the same cases, matched against each problem's real Go starter signature; problems whose signature or check function cannot be driven by a table of literals are reported individually, and `--go-gaps <path>` writes that list as JSON. The primary longitudinal regression suite is recent LiveCodeBench; EvalPlus, BigCodeBench, CodeContests, ICPC-Eval, MultiPL-E, and TestEval probe complementary correctness, performance, repair, language, and test-generation failures.
 
 ### Isolated agent comparison
 
