@@ -37,7 +37,7 @@ make check build
 
 ## Configure
 
-The model endpoint must implement the OpenAI Responses API. A standard API endpoint or a compatible local bridge both work.
+A run reaches a model in one of two ways. `--provider api`, the default, calls any endpoint that implements the OpenAI Responses API with a key. `--provider codex` spends an existing ChatGPT subscription through the Codex CLI's own credential, needs no key, and is described below.
 
 ```sh
 export LEETCODE_SOLVER_BASE_URL=https://api.openai.com/v1
@@ -52,9 +52,10 @@ Problem discovery and statement retrieval require no API key or LeetCode login. 
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `LEETCODE_SOLVER_PROVIDER` | `api` | `api` for a keyed endpoint, `codex` for a local ChatGPT subscription |
 | `LEETCODE_SOLVER_BASE_URL` | `https://api.openai.com/v1` | Model API base URL |
 | `LEETCODE_SOLVER_API_KEY` | `OPENAI_API_KEY` | Model credential |
-| `LEETCODE_SOLVER_MODEL` | `gpt-5.4` | Generation and review model |
+| `LEETCODE_SOLVER_MODEL` | `gpt-5.4`, or `gpt-5.6-luna` under `codex` | Generation and review model |
 | `LEETCODE_SOLVER_LANGUAGE` | `auto` | Solves every language that has both starter code and an offline bundle |
 | `LEETCODE_SOLVER_DATABASE` | `~/data/leetcode/leetcode.sqlite` | CGO-free local problem snapshot |
 | `LEETCODE_SOLVER_EVAL_ROOT` | `~/data/leetcode-evals` | Versioned offline test bundles |
@@ -64,6 +65,32 @@ Problem discovery and statement retrieval require no API key or LeetCode login. 
 | `LEETCODE_SOLVER_CANDIDATES` | `3` | Independent candidates, from 1 to 5 |
 | `LEETCODE_SOLVER_MAX_REPAIRS` | `2` | Execution-guided repair attempts |
 | `LEETCODE_SOLVER_MAX_CORRECTIONS` | `1` | Judge-guided article rewrites, code held fixed |
+
+### Solve with a ChatGPT subscription
+
+If the [Codex CLI](https://github.com/openai/codex) is signed in, `~/.codex/auth.json` already holds an OAuth credential for a paid ChatGPT plan. `--provider codex` reads that file directly and sends the solver's requests to the same backend the CLI uses, so a run costs plan quota rather than API credit:
+
+```sh
+leetcode-solver solve --provider codex two-sum
+export LEETCODE_SOLVER_PROVIDER=codex
+```
+
+The credential is read, never copied. An expired access token is refreshed in place through an atomic write that preserves every field the file already had, keeping a backup beside it and holding a lock so a concurrent Codex CLI cannot lose the new token. Nothing about it reaches a prompt, log line, benchmark row, or artifact. An API model slug and a subscription slug are separate namespaces, so choosing this provider also switches the default model; name `--model` explicitly to override it.
+
+Quota exhaustion is reported as itself, with the exact reset time, and is never retried into a longer wait.
+
+## Bridge
+
+`bridge` fronts the same subscription with an OpenAI-compatible HTTP endpoint, so tools that only speak an API — including this solver's own `api` provider, and the sandboxed agents in `agent-bench` — can use the plan:
+
+```sh
+leetcode-solver bridge
+leetcode-solver bridge --port 8790 --api-key local-secret
+```
+
+It serves `/v1/chat/completions`, `/v1/responses`, `/v1/models`, and an unauthenticated `/v1/health` that reports the plan and token expiry. Both completion endpoints accept the plain documented shapes and translate them into what the Codex backend actually requires; a request already in Codex CLI form is passed through byte for byte, and streaming is preserved either way. Rate-limit headers from upstream are forwarded so a caller can see its remaining quota.
+
+The listener defaults to loopback and prints a warning when it has no `--api-key`, because any local process could otherwise spend the plan's quota. Binding a non-loopback address without a key is refused outright.
 
 ## Solve
 

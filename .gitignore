@@ -34,3 +34,6 @@ go.work.sum
 
 # macOS
 .DS_Store
+
+# Build output of the Makefile
+/bin/

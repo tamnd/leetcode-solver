@@ -9,14 +9,17 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/tamnd/leetcode-solver/agentbench"
 	"github.com/tamnd/leetcode-solver/artifact"
+	"github.com/tamnd/leetcode-solver/codex"
 	"github.com/tamnd/leetcode-solver/completedataset"
 	"github.com/tamnd/leetcode-solver/config"
 	benchmark "github.com/tamnd/leetcode-solver/eval"
@@ -68,6 +71,8 @@ func run(ctx context.Context, args []string) error {
 		return agentSolve(ctx, args[1:])
 	case "agent-bench":
 		return agentBench(ctx, args[1:])
+	case "bridge":
+		return runBridge(ctx, args[1:])
 	case "version":
 		fmt.Println(version)
 		return nil
@@ -76,8 +81,56 @@ func run(ctx context.Context, args []string) error {
 	}
 }
 func usage() error {
-	fmt.Fprintln(os.Stderr, "usage: leetcode-solver <sync|complete-sync|convert|reference|eval-sync|coverage|solve|batch|catalog|verify|eval|agent-solve|agent-bench|version> [options]")
+	fmt.Fprintln(os.Stderr, "usage: leetcode-solver <sync|complete-sync|convert|reference|eval-sync|coverage|solve|batch|catalog|verify|eval|bridge|agent-solve|agent-bench|version> [options]")
 	return errors.New("command is required")
+}
+
+// runBridge fronts a ChatGPT subscription with an OpenAI-compatible endpoint,
+// so any of this repository's commands can run on the Codex CLI's credential
+// by pointing LEETCODE_SOLVER_BASE_URL at the printed address. `--provider
+// codex` reaches the same client in process; the bridge exists for the tools
+// that only speak HTTP, including the Codex CLI itself through /v1/responses.
+func runBridge(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("bridge", flag.ContinueOnError)
+	host := fs.String("host", "127.0.0.1", "listen address; a non-loopback address requires --api-key")
+	port := fs.Int("port", 8790, "listen port")
+	apiKey := fs.String("api-key", "", "key clients must present as a bearer token")
+	authPath := fs.String("auth", "", "Codex credential file; defaults to ~/.codex/auth.json")
+	model := fs.String("model", codex.DefaultModel, "model used when a request does not name one")
+	effort := fs.String("effort", "", "reasoning effort applied when a request does not set one")
+	timeout := fs.Duration("timeout", 30*time.Minute, "upstream request timeout")
+	retries := fs.Int("retries", 2, "retries for transient upstream failures")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("bridge takes no positional arguments")
+	}
+	logf := func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
+	auth := &codex.Auth{Path: *authPath, Logf: logf}
+	// Read the credential before binding the port. Failing here with a clear
+	// message beats a listener that answers every request with the same 502.
+	token, err := auth.Token(ctx)
+	if err != nil {
+		return err
+	}
+	bridge := &codex.Bridge{Client: &codex.Client{Auth: auth, HTTPClient: &http.Client{Timeout: *timeout}, MaxRetries: *retries, Effort: *effort}, APIKey: *apiKey, Model: *model, Logf: logf}
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	expiry := "unknown"
+	if !token.ExpiresAt.IsZero() {
+		expiry = token.ExpiresAt.Local().Format(time.RFC3339)
+	}
+	return bridge.Serve(ctx, *host, *port, func(address string) {
+		plan := token.PlanType
+		if plan == "" {
+			plan = "unknown"
+		}
+		fmt.Printf("leetcode-solver bridge on http://%s, plan %s, token expires %s, default model %s\n", address, plan, expiry, *model)
+		if *apiKey == "" {
+			fmt.Println("no --api-key set, so any local process can spend this plan's quota")
+		}
+	})
 }
 
 func agentBench(ctx context.Context, args []string) error {
@@ -171,6 +224,7 @@ func flags(name string) (*flag.FlagSet, *config.Config, *bool) {
 	cfg := config.Load()
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	force := fs.Bool("force", false, "ignore an accepted cached result")
+	fs.StringVar(&cfg.Provider, "provider", cfg.Provider, "api for an OpenAI-compatible endpoint, or codex for the local ChatGPT subscription credential")
 	fs.StringVar(&cfg.BaseURL, "base-url", cfg.BaseURL, "OpenAI-compatible API base URL")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key (prefer environment variable)")
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model name")
@@ -185,8 +239,48 @@ func flags(name string) (*flag.FlagSet, *config.Config, *bool) {
 	fs.IntVar(&cfg.MaxCorrections, "max-corrections", cfg.MaxCorrections, "article rewrites after a quality judge rejects it")
 	return fs, &cfg, force
 }
+
+// completer is the model endpoint a run talks to. The codex provider spends a
+// ChatGPT subscription through the Codex CLI's own credential and needs no key
+// and no listening port; everything else is an OpenAI-compatible endpoint,
+// which the bridge also is.
+func completer(cfg config.Config) llm.Completer {
+	if cfg.Provider == "codex" {
+		logf := func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
+		return &codex.Client{Auth: &codex.Auth{Logf: logf}, MaxRetries: 2}
+	}
+	return &llm.Client{BaseURL: cfg.BaseURL, APIKey: cfg.APIKey}
+}
+
+// resolveProvider refuses an unrecognized provider rather than quietly falling
+// back to the API path, where a subscription-only setup would fail later with a
+// missing-credential error that names the wrong cause.
+//
+// It also repairs the model when --provider codex is chosen on the command line
+// after the environment already defaulted the model for the API: the two are
+// separate slug namespaces, so carrying an API default into a subscription
+// request fails on the first call for a reason that reads like an outage.
+func resolveProvider(fs *flag.FlagSet, cfg *config.Config) error {
+	switch cfg.Provider {
+	case "api":
+		return nil
+	case "codex":
+	default:
+		return fmt.Errorf("unknown provider %q: use api or codex", cfg.Provider)
+	}
+	chosen := os.Getenv("LEETCODE_SOLVER_MODEL") != ""
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "model" {
+			chosen = true
+		}
+	})
+	if !chosen {
+		cfg.Model = codex.DefaultModel
+	}
+	return nil
+}
 func engine(cfg config.Config) *solver.Engine {
-	return &solver.Engine{Client: &llm.Client{BaseURL: cfg.BaseURL, APIKey: cfg.APIKey}, Judge: &judge.LeetCode{BaseURL: cfg.LeetCodeURL, Session: cfg.Session, CSRFToken: cfg.CSRFToken}, Offline: &offline.Runner{Root: cfg.EvalRoot, DockerBinary: cfg.ContainerRuntime}, Store: artifact.Store{Root: cfg.Output}, Progress: func(message string) { fmt.Fprintln(os.Stderr, message) }}
+	return &solver.Engine{Client: completer(cfg), Judge: &judge.LeetCode{BaseURL: cfg.LeetCodeURL, Session: cfg.Session, CSRFToken: cfg.CSRFToken}, Offline: &offline.Runner{Root: cfg.EvalRoot, DockerBinary: cfg.ContainerRuntime}, Store: artifact.Store{Root: cfg.Output}, Progress: func(message string) { fmt.Fprintln(os.Stderr, message) }}
 }
 
 func syncDataset(ctx context.Context, args []string) error {
@@ -428,6 +522,9 @@ func solve(ctx context.Context, args []string) error {
 	if fs.NArg() != 1 {
 		return errors.New("solve requires a problem slug")
 	}
+	if err := resolveProvider(fs, cfg); err != nil {
+		return err
+	}
 	repository, err := source.Open(cfg.Database)
 	if err != nil {
 		return err
@@ -509,6 +606,9 @@ func batch(ctx context.Context, args []string) error {
 	}
 	if *parallel < 1 || *parallel > 16 {
 		return errors.New("parallel must be between 1 and 16")
+	}
+	if err := resolveProvider(fs, cfg); err != nil {
+		return err
 	}
 	repository, err := source.Open(cfg.Database)
 	if err != nil {

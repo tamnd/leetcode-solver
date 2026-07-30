@@ -7,6 +7,9 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/tamnd/leetcode-solver/codex"
+	"github.com/tamnd/leetcode-solver/config"
+	"github.com/tamnd/leetcode-solver/llm"
 	"github.com/tamnd/leetcode-solver/offline"
 	"github.com/tamnd/leetcode-solver/problem"
 )
@@ -63,6 +66,61 @@ func TestRequiredLanguagesIgnoresBundleAvailability(t *testing.T) {
 	if got := requiredLanguages(problem.Problem{Slug: "x"}); len(got) != 0 {
 		t.Fatalf("got %q", got)
 	}
+}
+
+// The provider decides which credential a run spends. Reading it wrong means
+// either a subscription request sent to an API endpoint with no key, or an API
+// request charged to the ChatGPT plan.
+func TestCompleterFollowsTheProvider(t *testing.T) {
+	if got := completer(config.Config{Provider: "codex"}); !isCodex(got) {
+		t.Errorf("provider codex produced %T", got)
+	}
+	if got := completer(config.Config{Provider: "api", BaseURL: "https://example.test/v1"}); isCodex(got) {
+		t.Errorf("provider api produced %T", got)
+	}
+}
+
+// An API model slug and a subscription slug are different namespaces. Choosing
+// the provider on the command line, after the environment already defaulted the
+// model for the API, must not send gpt-5.4 to the Codex backend.
+func TestResolveProviderRepairsADefaultedModel(t *testing.T) {
+	t.Setenv("LEETCODE_SOLVER_MODEL", "")
+	for _, test := range []struct {
+		name, requested, want string
+		args                  []string
+	}{
+		{name: "defaulted model is replaced", requested: "gpt-5.4", want: codex.DefaultModel, args: []string{"--provider", "codex"}},
+		{name: "an explicit model is kept", requested: "gpt-5.4", want: "gpt-5.5", args: []string{"--provider", "codex", "--model", "gpt-5.5"}},
+		{name: "the api path is untouched", requested: "gpt-5.4", want: "gpt-5.4", args: []string{"--provider", "api"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fs, cfg, _ := flags("solve")
+			cfg.Model = test.requested
+			if err := fs.Parse(test.args); err != nil {
+				t.Fatal(err)
+			}
+			if err := resolveProvider(fs, cfg); err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Model != test.want {
+				t.Errorf("model = %q, want %q", cfg.Model, test.want)
+			}
+		})
+	}
+	// A typo must not silently fall back to the API path, where the failure would
+	// name a missing key rather than the misspelled provider.
+	fs, cfg, _ := flags("solve")
+	if err := fs.Parse([]string{"--provider", "chatgpt"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := resolveProvider(fs, cfg); err == nil {
+		t.Error("an unknown provider was accepted")
+	}
+}
+
+func isCodex(c llm.Completer) bool {
+	_, ok := c.(*codex.Client)
+	return ok
 }
 
 func writeManifest(t *testing.T, root, slug, language string) {
