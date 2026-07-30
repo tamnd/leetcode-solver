@@ -216,6 +216,53 @@ func TestSolveOffersOnlyExecutedCandidatesToTheSelector(t *testing.T) {
 	}
 }
 
+// A population exists so that one weak draw does not decide the run. A candidate
+// that answers off-contract is skipped, and the compliant one still publishes.
+func TestSolveSkipsARefusedCandidateAndUsesTheCompliantOne(t *testing.T) {
+	model := newScriptedLLM(map[string][]string{
+		"reference":     {"reference"},
+		"candidate":     {"an apology with no CODE block", validResponse("works")},
+		"criteria":      {"VERDICT: PASS"},
+		"falsification": {"VERDICT: PASS"},
+	})
+	engine := Engine{Client: model, Offline: &passingOffline{}, Store: artifact.Store{Root: t.TempDir()}}
+	got, err := engine.Solve(context.Background(), pythonProblem(), Options{Model: "m", Language: "python3", Candidates: 2, Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Code != "works" || !got.Accepted || !got.Verified {
+		t.Fatalf("code=%q accepted=%v verified=%v", got.Code, got.Accepted, got.Verified)
+	}
+	// The refusal has to stay in the audit, or a later reader cannot tell a skipped
+	// candidate from one that was never requested.
+	found := false
+	for _, attempt := range got.Attempts {
+		if attempt.Phase == "candidate" && attempt.Error != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the refused candidate was not recorded in the audit")
+	}
+}
+
+// When every candidate is refused there is nothing to execute, and the run must
+// fail with the reason the last one gave rather than a generic message.
+func TestSolveFailsWithTheReasonWhenEveryCandidateIsRefused(t *testing.T) {
+	model := newScriptedLLM(map[string][]string{
+		"reference": {"reference"},
+		"candidate": {"no code here", "still no code"},
+	})
+	engine := Engine{Client: model, Offline: &passingOffline{}, Store: artifact.Store{Root: t.TempDir()}}
+	_, err := engine.Solve(context.Background(), pythonProblem(), Options{Model: "m", Language: "python3", Candidates: 2, Force: true})
+	if err == nil {
+		t.Fatal("a run with no usable candidate was accepted")
+	}
+	if !strings.Contains(err.Error(), "candidate 2") {
+		t.Errorf("err = %v, want the last refusal named", err)
+	}
+}
+
 func TestSolveReverifiesCachedCandidate(t *testing.T) {
 	store := artifact.Store{Root: t.TempDir()}
 	p := pythonProblem()

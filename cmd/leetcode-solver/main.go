@@ -224,7 +224,7 @@ func flags(name string) (*flag.FlagSet, *config.Config, *bool) {
 	cfg := config.Load()
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	force := fs.Bool("force", false, "ignore an accepted cached result")
-	fs.StringVar(&cfg.Provider, "provider", cfg.Provider, "api for an OpenAI-compatible endpoint, or codex for the local ChatGPT subscription credential")
+	fs.StringVar(&cfg.Provider, "provider", cfg.Provider, "api for a Responses endpoint, chat for a chat-completions gateway, or codex for the local ChatGPT subscription credential")
 	fs.StringVar(&cfg.BaseURL, "base-url", cfg.BaseURL, "OpenAI-compatible API base URL")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key (prefer environment variable)")
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model name")
@@ -242,14 +242,17 @@ func flags(name string) (*flag.FlagSet, *config.Config, *bool) {
 
 // completer is the model endpoint a run talks to. The codex provider spends a
 // ChatGPT subscription through the Codex CLI's own credential and needs no key
-// and no listening port; everything else is an OpenAI-compatible endpoint,
-// which the bridge also is.
+// and no listening port; chat is for the many gateways that implement only
+// chat completions; api is the Responses endpoint, which the bridge also is.
 func completer(cfg config.Config) llm.Completer {
-	if cfg.Provider == "codex" {
+	switch cfg.Provider {
+	case "codex":
 		logf := func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
 		return &codex.Client{Auth: &codex.Auth{Logf: logf}, MaxRetries: 2}
+	case "chat":
+		return &llm.ChatClient{BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, MaxRetries: 2}
 	}
-	return &llm.Client{BaseURL: cfg.BaseURL, APIKey: cfg.APIKey}
+	return &llm.Client{BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, MaxRetries: 2}
 }
 
 // resolveProvider refuses an unrecognized provider rather than quietly falling
@@ -262,11 +265,11 @@ func completer(cfg config.Config) llm.Completer {
 // request fails on the first call for a reason that reads like an outage.
 func resolveProvider(fs *flag.FlagSet, cfg *config.Config) error {
 	switch cfg.Provider {
-	case "api":
+	case "api", "chat":
 		return nil
 	case "codex":
 	default:
-		return fmt.Errorf("unknown provider %q: use api or codex", cfg.Provider)
+		return fmt.Errorf("unknown provider %q: use api, chat, or codex", cfg.Provider)
 	}
 	chosen := os.Getenv("LEETCODE_SOLVER_MODEL") != ""
 	fs.Visit(func(f *flag.Flag) {

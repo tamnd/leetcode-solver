@@ -94,16 +94,27 @@ func (e *Engine) Solve(ctx context.Context, p problem.Problem, options Options) 
 	}
 	reference := referenceResponse.Text
 	result.Attempts = append(result.Attempts, artifact.Attempt{Phase: "reference", Response: referenceResponse, At: time.Now().UTC()})
+	// A candidate that answers off-contract, or not at all, is one weak draw from
+	// a population that exists precisely so that a single bad draw does not decide
+	// the run. It is recorded and skipped; only an empty population is fatal, and
+	// then the reason is the last one seen rather than a generic failure.
+	var refused error
 	for i := 1; i <= options.Candidates; i++ {
 		e.log("generating candidate %d/%d", i, options.Candidates)
 		instructions, input = e.Prompts.Candidate(p, snippet, i)
 		response, err := e.complete(ctx, "candidate", i, options.Model, instructions, input)
 		if err != nil {
-			return result, err
+			refused = fmt.Errorf("candidate %d: %w", i, err)
+			e.log("skipping candidate %d: %v", i, err)
+			result.Attempts = append(result.Attempts, artifact.Attempt{Phase: "candidate", Number: i, Error: err.Error(), At: time.Now().UTC()})
+			continue
 		}
 		code, explanation, err := textguard.Parse(response.Text)
 		if err != nil {
-			return result, fmt.Errorf("candidate %d: %w", i, err)
+			refused = fmt.Errorf("candidate %d: %w", i, err)
+			e.log("skipping candidate %d: %v", i, err)
+			result.Attempts = append(result.Attempts, artifact.Attempt{Phase: "candidate", Number: i, Response: response, Error: err.Error(), At: time.Now().UTC()})
+			continue
 		}
 		e.log("running candidate %d against the complete offline suite", i)
 		offlineResult, offlineErr := e.Offline.Verify(ctx, p.Slug, options.Language, code)
@@ -135,6 +146,9 @@ func (e *Engine) Solve(ctx context.Context, p problem.Problem, options Options) 
 	}
 	pool := eligible
 	if len(pool) == 0 {
+		if len(result.Candidates) == 0 {
+			return result, fmt.Errorf("no candidate met the response contract: %w", refused)
+		}
 		e.log("no candidate passed its offline suite; repairing the first")
 		pool = result.Candidates
 	}

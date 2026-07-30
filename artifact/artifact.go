@@ -41,7 +41,11 @@ type Attempt struct {
 	Number   int           `json:"number,omitempty"`
 	Response llm.Response  `json:"response"`
 	Judge    *judge.Result `json:"judge,omitempty"`
-	At       time.Time     `json:"at"`
+	// Error records why a phase produced nothing usable. A run that skipped a
+	// refused candidate and one that never generated it are different events, and
+	// only the audit can tell them apart afterwards.
+	Error string    `json:"error,omitempty"`
+	At    time.Time `json:"at"`
 }
 type Result struct {
 	Problem         problem.Problem `json:"problem"`

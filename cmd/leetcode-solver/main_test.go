@@ -78,6 +78,14 @@ func TestCompleterFollowsTheProvider(t *testing.T) {
 	if got := completer(config.Config{Provider: "api", BaseURL: "https://example.test/v1"}); isCodex(got) {
 		t.Errorf("provider api produced %T", got)
 	}
+	// A gateway that implements only chat completions answers a Responses request
+	// with an upstream error, so the two must not be interchangeable.
+	if _, ok := completer(config.Config{Provider: "chat", BaseURL: "https://example.test/v1"}).(*llm.ChatClient); !ok {
+		t.Error("provider chat did not produce a chat client")
+	}
+	if _, ok := completer(config.Config{Provider: "api", BaseURL: "https://example.test/v1"}).(*llm.Client); !ok {
+		t.Error("provider api did not produce a Responses client")
+	}
 }
 
 // An API model slug and a subscription slug are different namespaces. Choosing
